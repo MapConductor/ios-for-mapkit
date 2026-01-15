@@ -433,6 +433,16 @@ private struct MapKitMapViewRepresentable: UIViewRepresentable {
             let point = recognizer.location(in: mapView)
             let coordinate = mapView.convert(point, toCoordinateFrom: mapView)
 
+            // If the user tapped a marker/annotation view, do not also fire map click.
+            // (A tap gesture recognizer attached to MKMapView can still recognize taps on subviews.)
+            if let hitView = mapView.hitTest(point, with: nil) {
+                var view: UIView? = hitView
+                while let current = view {
+                    if current is MKAnnotationView { return }
+                    view = current.superview
+                }
+            }
+
             // Hit-test overlays first (MapKit doesn't provide built-in overlay tap callbacks).
             if groundImageController?.handleTap(at: coordinate) == true { return }
             if circleController?.handleTap(at: coordinate) == true { return }
@@ -504,8 +514,10 @@ private struct MapKitMapViewRepresentable: UIViewRepresentable {
                 return
             }
 
-            // Trigger onClick callback
-            markerState.onClick?(markerState)
+            if markerState.clickable {
+                // Trigger onClick callback
+                markerState.onClick?(markerState)
+            }
 
             // For draggable markers, keep selection to allow drag gesture
             // For non-draggable markers, deselect immediately
