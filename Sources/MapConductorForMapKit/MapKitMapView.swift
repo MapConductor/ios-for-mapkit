@@ -393,6 +393,7 @@ private struct MapKitMapViewRepresentable: UIViewRepresentable {
             guard !isRegionChanging else { return }
             isRegionChanging = true
             let camera = currentCameraPosition(from: mapView)
+            polylineController?.setCurrentCameraPosition(camera)
             controller?.notifyCameraMoveStart(camera)
             onCameraMoveStart?(camera)
         }
@@ -401,6 +402,7 @@ private struct MapKitMapViewRepresentable: UIViewRepresentable {
             guard isRegionChanging else { return }
             let camera = mapView.toMapCameraPosition()
             state.updateCameraPosition(camera)
+            polylineController?.setCurrentCameraPosition(camera)
             controller?.notifyCameraMove(camera)
             onCameraMove?(camera)
             Task { [weak self] in
@@ -413,6 +415,7 @@ private struct MapKitMapViewRepresentable: UIViewRepresentable {
         func mapView(_ mapView: MKMapView, regionDidChangeAnimated animated: Bool) {
             let camera = currentCameraPosition(from: mapView)
             state.updateCameraPosition(camera)
+            polylineController?.setCurrentCameraPosition(camera)
             controller?.notifyCameraMoveEnd(camera)
             onCameraMoveEnd?(camera)
             Task { [weak self] in
@@ -432,6 +435,9 @@ private struct MapKitMapViewRepresentable: UIViewRepresentable {
             guard let mapView = mapView, recognizer.state == .ended else { return }
             let point = recognizer.location(in: mapView)
             let coordinate = mapView.convert(point, toCoordinateFrom: mapView)
+
+            // Ensure polyline hit-testing uses the current zoom even if no region-change callbacks have fired yet.
+            polylineController?.setCurrentCameraPosition(currentCameraPosition(from: mapView))
 
             // If the user tapped a marker/annotation view, do not also fire map click.
             // (A tap gesture recognizer attached to MKMapView can still recognize taps on subviews.)
