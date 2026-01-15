@@ -5,17 +5,6 @@ import QuartzCore
 import SwiftUI
 import UIKit
 
-/// A container view that only intercepts touches on its subviews (InfoBubbles),
-/// allowing touches elsewhere to pass through to the map view below.
-private class PassthroughContainerView: UIView {
-    override func hitTest(_ point: CGPoint, with event: UIEvent?) -> UIView? {
-        let hitView = super.hitTest(point, with: event)
-        // If the hit view is this container itself (not a subview), return nil
-        // to pass the touch through to the view below (the map).
-        return hitView == self ? nil : hitView
-    }
-}
-
 public struct MapKitMapView: View {
     @ObservedObject private var state: MapKitViewState
 
@@ -136,7 +125,7 @@ private struct MapKitMapViewRepresentable: UIViewRepresentable {
         weak var mapView: MKMapView?
         private var controller: MapKitViewController?
         private var markerController: MapKitMarkerController?
-        private var infoBubbleController: InfoBubbleController?
+        private var infoBubbleCoordinator: InfoBubbleOverlayCoordinator?
         private var circleController: MapKitCircleController?
         private var polylineController: MapKitPolylineController?
         private var polygonController: MapKitPolygonController?
@@ -197,12 +186,21 @@ private struct MapKitMapViewRepresentable: UIViewRepresentable {
             }
             self.markerController = markerController
 
-            let infoBubbleController = InfoBubbleController(
-                mapView: mapView,
+            self.infoBubbleCoordinator = InfoBubbleOverlayCoordinator(
                 container: infoBubbleContainer,
-                markerController: markerController
+                project: { [weak self] point in
+                    guard let mapView = self?.mapView else { return nil }
+                    let coordinate = CLLocationCoordinate2D(latitude: point.latitude, longitude: point.longitude)
+                    return mapView.convert(coordinate, toPointTo: mapView)
+                },
+                resolveMarkerStateForIcon: { [weak markerController] id, bubbleMarker in
+                    markerController?.getMarkerState(for: id) ?? bubbleMarker
+                },
+                iconMetrics: { [weak markerController] markerState in
+                    let icon = markerController?.getIcon(for: markerState) ?? (markerState.icon ?? DefaultMarkerIcon()).toBitmapIcon()
+                    return MarkerIconMetrics(size: icon.size, anchor: icon.anchor, infoAnchor: icon.infoAnchor)
+                }
             )
-            self.infoBubbleController = infoBubbleController
 
             let circleController = MapKitCircleController(mapView: mapView)
             self.circleController = circleController
@@ -249,8 +247,8 @@ private struct MapKitMapViewRepresentable: UIViewRepresentable {
             controller = nil
             markerController?.unbind()
             markerController = nil
-            infoBubbleController?.unbind()
-            infoBubbleController = nil
+            infoBubbleCoordinator?.unbind()
+            infoBubbleCoordinator = nil
             circleController?.unbind()
             circleController = nil
             polylineController?.unbind()
@@ -276,7 +274,7 @@ private struct MapKitMapViewRepresentable: UIViewRepresentable {
 
         func updateContent(_ content: MapViewContent) {
             MCLog.map("MapKitMapView.updateContent markers=\(content.markers.count) circles=\(content.circles.count) polylines=\(content.polylines.count) polygons=\(content.polygons.count)")
-            infoBubbleController?.syncInfoBubbles(content.infoBubbles)
+            infoBubbleCoordinator?.syncInfoBubbles(content.infoBubbles)
 
             // Prime marker caches before triggering MKMapView annotation creation.
             // (MapKit can ask for annotation views immediately after addAnnotation.)
@@ -511,6 +509,10 @@ private struct MapKitMapViewRepresentable: UIViewRepresentable {
             return annotationView
         }
 
+        func mapViewDidFinishLoadingMap(_ mapView: MKMapView) {
+            updateInfoBubbleLayouts()
+        }
+
         func mapView(_ mapView: MKMapView, didSelect view: MKAnnotationView) {
             guard let pointAnnotation = view.annotation as? MKPointAnnotation,
                   let markerId = pointAnnotation.title,
@@ -638,7 +640,7 @@ private struct MapKitMapViewRepresentable: UIViewRepresentable {
                 x: annotationView.center.x - annotationView.centerOffset.x,
                 y: annotationView.center.y - annotationView.centerOffset.y
             )
-            infoBubbleController?.updateInfoBubblePosition(for: id, coordinatePoint: coordinatePoint)
+            infoBubbleCoordinator?.updateInfoBubblePosition(for: id, screenPoint: coordinatePoint)
 
             if let markerState = markerController?.getMarkerState(for: id) {
                 let coordinate = mapView.convert(coordinatePoint, toCoordinateFrom: mapView)
@@ -695,11 +697,11 @@ private struct MapKitMapViewRepresentable: UIViewRepresentable {
         }
 
         fileprivate func updateInfoBubbleLayouts() {
-            infoBubbleController?.updateAllLayouts()
+            infoBubbleCoordinator?.updateAllLayouts()
         }
 
         private func updateInfoBubblePosition(for id: String) {
-            infoBubbleController?.updateInfoBubblePosition(for: id)
+            infoBubbleCoordinator?.updateInfoBubblePosition(for: id)
         }
     }
 }
