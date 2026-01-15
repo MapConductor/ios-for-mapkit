@@ -117,6 +117,9 @@ final class MapKitViewController: MapViewControllerProtocol {
         // based on the viewport size. This avoids relying on a single magic constant (zoom0Altitude) for MapKit.
         let isTopDown = abs(position.tilt) < 0.01
         guard isTopDown, !mapView.bounds.isEmpty else { return false }
+        // At very low zoom levels, MapKit's map rect handling can "wrap" in a way that ends up showing
+        // the world centered near the Pacific. Prefer the altitude-based camera conversion in that case.
+        guard position.zoom >= 3.0 else { return false }
 
         let widthPoints = Double(mapView.bounds.width)
         let heightPoints = Double(mapView.bounds.height)
@@ -140,12 +143,24 @@ final class MapKitViewController: MapViewControllerProtocol {
 
         let centerCoordinate = CLLocationCoordinate2D(latitude: position.position.latitude, longitude: position.position.longitude)
         let centerPoint = MKMapPoint(centerCoordinate)
-        let rect = MKMapRect(
-            x: centerPoint.x - mapRectWidth / 2.0,
-            y: centerPoint.y - mapRectHeight / 2.0,
-            width: mapRectWidth,
-            height: mapRectHeight
-        )
+        // Clamp the visible rect to the MapKit world. Extremely large rects can cause MapKit
+        // to "wrap" and end up centered far away from the requested coordinate.
+        let world = MKMapRect.world
+        // If the requested rect is close to "world size", we tend to hit MapKit edge cases.
+        // Fall back to altitude-based camera conversion to keep the center stable.
+        if mapRectWidth >= world.size.width * 0.98 || mapRectHeight >= world.size.height * 0.98 {
+            return false
+        }
+        let clampedWidth = min(mapRectWidth, world.size.width)
+        let clampedHeight = min(mapRectHeight, world.size.height)
+
+        var originX = centerPoint.x - clampedWidth / 2.0
+        var originY = centerPoint.y - clampedHeight / 2.0
+
+        originX = max(world.origin.x, min(originX, world.maxX - clampedWidth))
+        originY = max(world.origin.y, min(originY, world.maxY - clampedHeight))
+
+        let rect = MKMapRect(x: originX, y: originY, width: clampedWidth, height: clampedHeight)
 
         // Apply heading explicitly (including 0) without changing scale.
         var camera = mapView.camera
