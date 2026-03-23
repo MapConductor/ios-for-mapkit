@@ -19,7 +19,14 @@ final class MapKitPolygonOverlayRenderer: AbstractPolygonOverlayRenderer<MKPolyg
             : createLinearInterpolatePoints(state.points)
 
         var coordinates = geoPoints.map { CLLocationCoordinate2D(latitude: $0.latitude, longitude: $0.longitude) }
-        let polygon = MKPolygon(coordinates: &coordinates, count: coordinates.count)
+        let interiorPolygons: [MKPolygon] = state.holes.compactMap { holePoints in
+            guard !holePoints.isEmpty else { return nil }
+            var holeCoords = holePoints.map { CLLocationCoordinate2D(latitude: $0.latitude, longitude: $0.longitude) }
+            return MKPolygon(coordinates: &holeCoords, count: holeCoords.count)
+        }
+        let polygon = interiorPolygons.isEmpty
+            ? MKPolygon(coordinates: &coordinates, count: coordinates.count)
+            : MKPolygon(coordinates: &coordinates, count: coordinates.count, interiorPolygons: interiorPolygons)
         polygon.title = state.id
 
         let renderer = MKPolygonRenderer(polygon: polygon)
@@ -42,8 +49,8 @@ final class MapKitPolygonOverlayRenderer: AbstractPolygonOverlayRenderer<MKPolyg
         let finger = current.fingerPrint
         let prevFinger = prev.fingerPrint
 
-        // If points or geodesic changed, we need to recreate the polygon
-        if finger.points != prevFinger.points || finger.geodesic != prevFinger.geodesic {
+        // If points, geodesic, or holes changed, we need to recreate the polygon
+        if finger.points != prevFinger.points || finger.geodesic != prevFinger.geodesic || finger.holes != prevFinger.holes {
             mapView.removeOverlay(polygon)
             renderersByPolygonId.removeValue(forKey: current.state.id)
             return await createPolygon(state: current.state)
