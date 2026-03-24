@@ -285,6 +285,7 @@ private struct MapKitMapViewRepresentable: UIViewRepresentable {
                 dict[marker.id] = marker.state
             }
 
+            markerController?.tilingOptions = content.markerTilingOptions
             markerController?.syncMarkers(content.markers)
             updateStrategyRendering(content)
             circleController?.syncCircles(content.circles)
@@ -447,6 +448,9 @@ private struct MapKitMapViewRepresentable: UIViewRepresentable {
                 }
             }
 
+            // Hit-test tiled markers (tile-rendered markers have no native annotation tap event).
+            if markerController?.handleTiledMarkerTap(at: point) == true { return }
+
             // Hit-test overlays first (MapKit doesn't provide built-in overlay tap callbacks).
             if groundImageController?.handleTap(at: coordinate) == true { return }
             if circleController?.handleTap(at: coordinate) == true { return }
@@ -570,6 +574,10 @@ private struct MapKitMapViewRepresentable: UIViewRepresentable {
         // MARK: - Overlay Delegate Methods
 
         func mapView(_ mapView: MKMapView, rendererFor overlay: MKOverlay) -> MKOverlayRenderer {
+            // Marker tile overlay (tiling optimization)
+            if let renderer = markerController?.tileOverlayRenderer(for: overlay) {
+                return renderer
+            }
             // Handle raster tile overlays first to ensure they always get an MKTileOverlayRenderer.
             // (If MapKit caches a default renderer once, it may not re-query later.)
             if let tileOverlay = overlay as? MKTileOverlay {
