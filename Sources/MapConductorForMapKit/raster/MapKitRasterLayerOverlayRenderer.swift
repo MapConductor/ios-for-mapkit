@@ -1,5 +1,6 @@
 import MapKit
 import MapConductorCore
+
 @MainActor
 final class MapKitRasterLayerOverlayRenderer: AbstractRasterLayerOverlayRenderer<MKTileOverlay> {
     private weak var mapView: MKMapView?
@@ -13,7 +14,7 @@ final class MapKitRasterLayerOverlayRenderer: AbstractRasterLayerOverlayRenderer
 
     override func createLayer(state: RasterLayerState) async -> MKTileOverlay? {
         guard let mapView else { return nil }
-        let overlay = makeTileOverlay(from: state.source)
+        guard let overlay = await makeTileOverlay(from: state) else { return nil }
         overlayStates[overlay] = state
 
         let renderer = MKTileOverlayRenderer(tileOverlay: overlay)
@@ -96,7 +97,9 @@ final class MapKitRasterLayerOverlayRenderer: AbstractRasterLayerOverlayRenderer
         mapView = nil
     }
 
-    private func makeTileOverlay(from source: RasterSource) -> MKTileOverlay {
+    private func makeTileOverlay(from state: RasterLayerState) async -> MKTileOverlay? {
+        let source = await resolveSource(state: state)
+
         switch source {
         case let .urlTemplate(template, tileSize, minZoom, maxZoom, _, scheme):
             let overlay = CustomURLTileOverlay(
@@ -104,17 +107,97 @@ final class MapKitRasterLayerOverlayRenderer: AbstractRasterLayerOverlayRenderer
                 tileSize: tileSize,
                 minZoom: minZoom,
                 maxZoom: maxZoom,
-                scheme: scheme
+                scheme: scheme,
+                userAgent: state.userAgent,
+                extraHeaders: state.extraHeaders
             )
             // Set canReplaceMapContent to false for overlay layers (like heatmaps)
             // so the base map remains visible underneath
             overlay.canReplaceMapContent = false
             return overlay
         case .tileJson:
-            fatalError("RasterSource.tileJson is not implemented for MapKit yet.")
+            // TileJSON is resolved to a UrlTemplate before reaching here.
+            return nil
         case .arcGisService:
-            fatalError("RasterSource.arcGisService is not implemented for MapKit yet.")
+            // ArcGIS is resolved to a UrlTemplate before reaching here.
+            return nil
         }
+    }
+
+    private struct TileJson: Decodable {
+        let tiles: [String]
+        let minzoom: Int?
+        let maxzoom: Int?
+        let tileSize: Int?
+        let scheme: String?
+
+        enum CodingKeys: String, CodingKey {
+            case tiles
+            case minzoom
+            case maxzoom
+            case tileSize = "tileSize"
+            case scheme
+        }
+    }
+
+    private func resolveSource(state: RasterLayerState) async -> RasterSource {
+        switch state.source {
+        case .urlTemplate:
+            return state.source
+        case let .arcGisService(serviceUrl):
+            let base = serviceUrl.trimmingCharacters(in: CharacterSet.whitespacesAndNewlines).trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+            let template = "\(base)/tile/{z}/{y}/{x}"
+            return .urlTemplate(template: template, tileSize: RasterSource.defaultTileSize, scheme: .XYZ)
+        case let .tileJson(url):
+            guard let configUrl = URL(string: url) else {
+                NSLog("[MapConductor] MapKit RasterLayer: invalid tileJson url=%@", url)
+                return state.source
+            }
+            do {
+                let tileJson = try await fetchTileJson(url: configUrl, state: state)
+                guard let template = tileJson.tiles.first else {
+                    NSLog("[MapConductor] MapKit RasterLayer: tileJson contained no tiles array. id=%@", state.id)
+                    return state.source
+                }
+                let scheme: TileScheme =
+                    (tileJson.scheme?.lowercased() == "tms") ? .TMS : .XYZ
+                let tileSize = tileJson.tileSize ?? RasterSource.defaultTileSize
+                return .urlTemplate(
+                    template: template,
+                    tileSize: tileSize,
+                    minZoom: tileJson.minzoom,
+                    maxZoom: tileJson.maxzoom,
+                    attribution: nil,
+                    scheme: scheme
+                )
+            } catch {
+                NSLog("[MapConductor] MapKit RasterLayer: failed to load tileJson. id=%@ error=%@", state.id, String(describing: error))
+                return state.source
+            }
+        }
+    }
+
+    private func fetchTileJson(url: URL, state: RasterLayerState) async throws -> TileJson {
+        var request = URLRequest(url: url)
+        if let headers = state.extraHeaders {
+            for (k, v) in headers {
+                request.setValue(v, forHTTPHeaderField: k)
+            }
+        }
+        let ua = state.userAgent?.trimmingCharacters(in: CharacterSet.whitespacesAndNewlines)
+        if let ua, !ua.isEmpty {
+            request.setValue(ua, forHTTPHeaderField: "User-Agent")
+        }
+
+        let (data, response) = try await URLSession.shared.data(for: request)
+        if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
+            throw NSError(
+                domain: "MapConductorForMapKit.TileJson",
+                code: http.statusCode,
+                userInfo: [NSLocalizedDescriptionKey: "HTTP \(http.statusCode) for \(url.absoluteString)"]
+            )
+        }
+        return try JSONDecoder().decode(TileJson.self, from: data)
     }
 }
 
@@ -125,12 +208,24 @@ private class CustomURLTileOverlay: MKTileOverlay {
     private let maxZoom: Int?
     private let scheme: TileScheme
     private let session: URLSession
+    private let userAgent: String?
+    private let extraHeaders: [String: String]
 
-    init(urlTemplate: String, tileSize: Int, minZoom: Int?, maxZoom: Int?, scheme: TileScheme) {
+    init(
+        urlTemplate: String,
+        tileSize: Int,
+        minZoom: Int?,
+        maxZoom: Int?,
+        scheme: TileScheme,
+        userAgent: String?,
+        extraHeaders: [String: String]?
+    ) {
         self.templateString = urlTemplate
         self.minZoom = minZoom
         self.maxZoom = maxZoom
         self.scheme = scheme
+        self.userAgent = userAgent
+        self.extraHeaders = extraHeaders ?? [:]
         let config = URLSessionConfiguration.default
         config.requestCachePolicy = .useProtocolCachePolicy
         config.httpMaximumConnectionsPerHost = 4
@@ -156,10 +251,18 @@ private class CustomURLTileOverlay: MKTileOverlay {
         }
 
         var request = URLRequest(url: url)
-        // Some public tile servers require a clear User-Agent.
-        request.setValue("MapConductorSampleApp/1.0 (iOS; MKTileOverlay)", forHTTPHeaderField: "User-Agent")
+        for (k, v) in extraHeaders {
+            request.setValue(v, forHTTPHeaderField: k)
+        }
+        let ua = userAgent?.trimmingCharacters(in: CharacterSet.whitespacesAndNewlines)
+        if let ua, !ua.isEmpty {
+            request.setValue(ua, forHTTPHeaderField: "User-Agent")
+        } else {
+            // Some public tile servers require a clear User-Agent.
+            request.setValue("MapConductor (iOS; MKTileOverlay)", forHTTPHeaderField: "User-Agent")
+        }
 
-        session.dataTask(with: request) { [tileSize] data, response, error in
+        session.dataTask(with: request) { data, response, error in
             if let error {
                 result(nil, error)
                 return

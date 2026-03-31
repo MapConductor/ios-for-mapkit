@@ -5,17 +5,6 @@ import QuartzCore
 import SwiftUI
 import UIKit
 
-/// A container view that only intercepts touches on its subviews (InfoBubbles),
-/// allowing touches elsewhere to pass through to the map view below.
-private class PassthroughContainerView: UIView {
-    override func hitTest(_ point: CGPoint, with event: UIEvent?) -> UIView? {
-        let hitView = super.hitTest(point, with: event)
-        // If the hit view is this container itself (not a subview), return nil
-        // to pass the touch through to the view below (the map).
-        return hitView == self ? nil : hitView
-    }
-}
-
 public struct MapKitMapView: View {
     @ObservedObject private var state: MapKitViewState
 
@@ -136,7 +125,7 @@ private struct MapKitMapViewRepresentable: UIViewRepresentable {
         weak var mapView: MKMapView?
         private var controller: MapKitViewController?
         private var markerController: MapKitMarkerController?
-        private var infoBubbleController: InfoBubbleController?
+        private var infoBubbleCoordinator: InfoBubbleOverlayCoordinator?
         private var circleController: MapKitCircleController?
         private var polylineController: MapKitPolylineController?
         private var polygonController: MapKitPolygonController?
@@ -197,12 +186,21 @@ private struct MapKitMapViewRepresentable: UIViewRepresentable {
             }
             self.markerController = markerController
 
-            let infoBubbleController = InfoBubbleController(
-                mapView: mapView,
+            self.infoBubbleCoordinator = InfoBubbleOverlayCoordinator(
                 container: infoBubbleContainer,
-                markerController: markerController
+                project: { [weak self] point in
+                    guard let mapView = self?.mapView else { return nil }
+                    let coordinate = CLLocationCoordinate2D(latitude: point.latitude, longitude: point.longitude)
+                    return mapView.convert(coordinate, toPointTo: mapView)
+                },
+                resolveMarkerStateForIcon: { [weak markerController] id, bubbleMarker in
+                    markerController?.getMarkerState(for: id) ?? bubbleMarker
+                },
+                iconMetrics: { [weak markerController] markerState in
+                    let icon = markerController?.getIcon(for: markerState) ?? (markerState.icon ?? DefaultMarkerIcon()).toBitmapIcon()
+                    return MarkerIconMetrics(size: icon.size, anchor: icon.anchor, infoAnchor: icon.infoAnchor)
+                }
             )
-            self.infoBubbleController = infoBubbleController
 
             let circleController = MapKitCircleController(mapView: mapView)
             self.circleController = circleController
@@ -249,8 +247,8 @@ private struct MapKitMapViewRepresentable: UIViewRepresentable {
             controller = nil
             markerController?.unbind()
             markerController = nil
-            infoBubbleController?.unbind()
-            infoBubbleController = nil
+            infoBubbleCoordinator?.unbind()
+            infoBubbleCoordinator = nil
             circleController?.unbind()
             circleController = nil
             polylineController?.unbind()
@@ -276,7 +274,7 @@ private struct MapKitMapViewRepresentable: UIViewRepresentable {
 
         func updateContent(_ content: MapViewContent) {
             MCLog.map("MapKitMapView.updateContent markers=\(content.markers.count) circles=\(content.circles.count) polylines=\(content.polylines.count) polygons=\(content.polygons.count)")
-            infoBubbleController?.syncInfoBubbles(content.infoBubbles)
+            infoBubbleCoordinator?.syncInfoBubbles(content.infoBubbles)
 
             // Prime marker caches before triggering MKMapView annotation creation.
             // (MapKit can ask for annotation views immediately after addAnnotation.)
@@ -287,6 +285,7 @@ private struct MapKitMapViewRepresentable: UIViewRepresentable {
                 dict[marker.id] = marker.state
             }
 
+            markerController?.tilingOptions = content.markerTilingOptions
             markerController?.syncMarkers(content.markers)
             updateStrategyRendering(content)
             circleController?.syncCircles(content.circles)
@@ -393,6 +392,7 @@ private struct MapKitMapViewRepresentable: UIViewRepresentable {
             guard !isRegionChanging else { return }
             isRegionChanging = true
             let camera = currentCameraPosition(from: mapView)
+            polylineController?.setCurrentCameraPosition(camera)
             controller?.notifyCameraMoveStart(camera)
             onCameraMoveStart?(camera)
         }
@@ -401,6 +401,7 @@ private struct MapKitMapViewRepresentable: UIViewRepresentable {
             guard isRegionChanging else { return }
             let camera = mapView.toMapCameraPosition()
             state.updateCameraPosition(camera)
+            polylineController?.setCurrentCameraPosition(camera)
             controller?.notifyCameraMove(camera)
             onCameraMove?(camera)
             Task { [weak self] in
@@ -413,6 +414,7 @@ private struct MapKitMapViewRepresentable: UIViewRepresentable {
         func mapView(_ mapView: MKMapView, regionDidChangeAnimated animated: Bool) {
             let camera = currentCameraPosition(from: mapView)
             state.updateCameraPosition(camera)
+            polylineController?.setCurrentCameraPosition(camera)
             controller?.notifyCameraMoveEnd(camera)
             onCameraMoveEnd?(camera)
             Task { [weak self] in
@@ -432,6 +434,22 @@ private struct MapKitMapViewRepresentable: UIViewRepresentable {
             guard let mapView = mapView, recognizer.state == .ended else { return }
             let point = recognizer.location(in: mapView)
             let coordinate = mapView.convert(point, toCoordinateFrom: mapView)
+
+            // Ensure polyline hit-testing uses the current zoom even if no region-change callbacks have fired yet.
+            polylineController?.setCurrentCameraPosition(currentCameraPosition(from: mapView))
+
+            // If the user tapped a marker/annotation view, do not also fire map click.
+            // (A tap gesture recognizer attached to MKMapView can still recognize taps on subviews.)
+            if let hitView = mapView.hitTest(point, with: nil) {
+                var view: UIView? = hitView
+                while let current = view {
+                    if current is MKAnnotationView { return }
+                    view = current.superview
+                }
+            }
+
+            // Hit-test tiled markers (tile-rendered markers have no native annotation tap event).
+            if markerController?.handleTiledMarkerTap(at: point) == true { return }
 
             // Hit-test overlays first (MapKit doesn't provide built-in overlay tap callbacks).
             if groundImageController?.handleTap(at: coordinate) == true { return }
@@ -495,6 +513,10 @@ private struct MapKitMapViewRepresentable: UIViewRepresentable {
             return annotationView
         }
 
+        func mapViewDidFinishLoadingMap(_ mapView: MKMapView) {
+            updateInfoBubbleLayouts()
+        }
+
         func mapView(_ mapView: MKMapView, didSelect view: MKAnnotationView) {
             guard let pointAnnotation = view.annotation as? MKPointAnnotation,
                   let markerId = pointAnnotation.title,
@@ -504,8 +526,10 @@ private struct MapKitMapViewRepresentable: UIViewRepresentable {
                 return
             }
 
-            // Trigger onClick callback
-            markerState.onClick?(markerState)
+            if markerState.clickable {
+                // Trigger onClick callback
+                markerState.onClick?(markerState)
+            }
 
             // For draggable markers, keep selection to allow drag gesture
             // For non-draggable markers, deselect immediately
@@ -550,6 +574,10 @@ private struct MapKitMapViewRepresentable: UIViewRepresentable {
         // MARK: - Overlay Delegate Methods
 
         func mapView(_ mapView: MKMapView, rendererFor overlay: MKOverlay) -> MKOverlayRenderer {
+            // Marker tile overlay (tiling optimization)
+            if let renderer = markerController?.tileOverlayRenderer(for: overlay) {
+                return renderer
+            }
             // Handle raster tile overlays first to ensure they always get an MKTileOverlayRenderer.
             // (If MapKit caches a default renderer once, it may not re-query later.)
             if let tileOverlay = overlay as? MKTileOverlay {
@@ -620,7 +648,7 @@ private struct MapKitMapViewRepresentable: UIViewRepresentable {
                 x: annotationView.center.x - annotationView.centerOffset.x,
                 y: annotationView.center.y - annotationView.centerOffset.y
             )
-            infoBubbleController?.updateInfoBubblePosition(for: id, coordinatePoint: coordinatePoint)
+            infoBubbleCoordinator?.updateInfoBubblePosition(for: id, screenPoint: coordinatePoint)
 
             if let markerState = markerController?.getMarkerState(for: id) {
                 let coordinate = mapView.convert(coordinatePoint, toCoordinateFrom: mapView)
@@ -677,11 +705,11 @@ private struct MapKitMapViewRepresentable: UIViewRepresentable {
         }
 
         fileprivate func updateInfoBubbleLayouts() {
-            infoBubbleController?.updateAllLayouts()
+            infoBubbleCoordinator?.updateAllLayouts()
         }
 
         private func updateInfoBubblePosition(for id: String) {
-            infoBubbleController?.updateInfoBubblePosition(for: id)
+            infoBubbleCoordinator?.updateInfoBubblePosition(for: id)
         }
     }
 }
