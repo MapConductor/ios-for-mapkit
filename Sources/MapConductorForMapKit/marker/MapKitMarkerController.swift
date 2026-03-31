@@ -61,6 +61,8 @@ final class MapKitMarkerController: AbstractMarkerController<MKPointAnnotation, 
                 MCLog.marker("MapKitMarkerController.syncMarkers -> add()")
                 await self.add(data: markers.map { $0.state })
             }
+        } else {
+            refreshTileLayerIfNeeded()
         }
 
         for marker in markers {
@@ -106,6 +108,7 @@ final class MapKitMarkerController: AbstractMarkerController<MKPointAnnotation, 
     private var tileRouteId: String?
     private var tiledMarkerIds: Set<String> = []
     private var tileOverlay: MKTileOverlay?
+    private var lastServerBaseUrl: String = ""
     private let defaultMarkerIconForTiling: BitmapIcon = DefaultMarkerIcon().toBitmapIcon()
 
     private static var retinaAwareTileSize: Int {
@@ -161,6 +164,14 @@ final class MapKitMarkerController: AbstractMarkerController<MKPointAnnotation, 
         }
     }
 
+    private func refreshTileLayerIfNeeded() {
+        guard !tiledMarkerIds.isEmpty else { return }
+        let server = TileServerRegistry.get()
+        guard server.baseUrl != lastServerBaseUrl else { return }
+        MCLog.marker("MapKitMarkerController.refreshTileLayerIfNeeded serverRestarted oldUrl=\(lastServerBaseUrl) newUrl=\(server.baseUrl)")
+        updateTileOverlay(hasTiledMarkers: true)
+    }
+
     private func updateTileOverlay(hasTiledMarkers: Bool) {
         MCLog.marker("MapKitMarkerController.updateTileOverlay hasTiledMarkers=\(hasTiledMarkers) mapView=\(mapView != nil) routeId=\(tileRouteId ?? "nil")")
         if let old = tileOverlay {
@@ -171,6 +182,7 @@ final class MapKitMarkerController: AbstractMarkerController<MKPointAnnotation, 
         guard hasTiledMarkers, let mapView, let routeId = tileRouteId, let tileRenderer else { return }
 
         let server = TileServerRegistry.get()
+        lastServerBaseUrl = server.baseUrl
         let urlTemplate = server.urlTemplate(routeId: routeId, tileSize: tileRenderer.tileSize)
         MCLog.marker("MapKitMarkerController.updateTileOverlay addOverlay urlTemplate=\(urlTemplate) tileSize=\(tileRenderer.tileSize)")
         // MKTileOverlay.tileSize=256 ensures MapKit requests tiles at the correct zoom level.
@@ -250,6 +262,7 @@ final class MarkerTileOverlay: MKTileOverlay {
     override var boundingMapRect: MKMapRect { MKMapRect.world }
 
     override func url(forTilePath path: MKTileOverlayPath) -> URL {
+        MCLog.marker("MarkerTileOverlay.url z=\(path.z) x=\(path.x) y=\(path.y) scale=\(path.contentScaleFactor)")
         let base = super.url(forTilePath: path).absoluteString
         return URL(string: base) ?? URL(string: "about:blank")!
     }
