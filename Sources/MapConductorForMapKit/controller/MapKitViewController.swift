@@ -94,8 +94,6 @@ final class MapKitViewController: MapViewControllerProtocol {
         cameraAnimationDisplayLink = displayLink
     }
 
-    func registerOverlayController(controller: any OverlayControllerProtocol) {}
-
     func notifyCameraMoveStart(_ cameraPosition: MapCameraPosition) {
         cameraMoveStartListener?(cameraPosition)
     }
@@ -111,7 +109,6 @@ final class MapKitViewController: MapViewControllerProtocol {
     func notifyMapClick(_ point: GeoPoint) {
         mapClickListener?(point)
     }
-
     private func applyTopDownZoom(position: MapCameraPosition, mapView: MKMapView, animated: Bool, duration: Double = 0.0) -> Bool {
         // For top-down cameras, setVisibleMapRect can match Google/WebMercator zoom precisely (including latitude scaling)
         // based on the viewport size. This avoids relying on a single magic constant (zoom0Altitude) for MapKit.

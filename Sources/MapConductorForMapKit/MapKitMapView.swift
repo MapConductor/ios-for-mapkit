@@ -274,6 +274,9 @@ private struct MapKitMapViewRepresentable: UIViewRepresentable {
 
         func updateContent(_ content: MapViewContent) {
             MCLog.map("MapKitMapView.updateContent markers=\(content.markers.count) circles=\(content.circles.count) polylines=\(content.polylines.count) polygons=\(content.polygons.count)")
+            if let mapView {
+                polylineController?.setCurrentCameraPosition(currentCameraPosition(from: mapView))
+            }
             infoBubbleCoordinator?.syncInfoBubbles(content.infoBubbles)
 
             // Prime marker caches before triggering MKMapView annotation creation.
