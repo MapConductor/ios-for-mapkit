@@ -13,6 +13,7 @@ public struct MapKitMapView: View {
     private let onCameraMoveStart: OnCameraMoveHandler?
     private let onCameraMove: OnCameraMoveHandler?
     private let onCameraMoveEnd: OnCameraMoveHandler?
+    private let sdkInitialize: (() -> Void)?
     private let content: () -> MapViewContent
 
     public init(
@@ -22,6 +23,7 @@ public struct MapKitMapView: View {
         onCameraMoveStart: OnCameraMoveHandler? = nil,
         onCameraMove: OnCameraMoveHandler? = nil,
         onCameraMoveEnd: OnCameraMoveHandler? = nil,
+        sdkInitialize: (() -> Void)? = nil,
         @MapViewContentBuilder content: @escaping () -> MapViewContent = { MapViewContent() }
     ) {
         self.state = state
@@ -30,6 +32,7 @@ public struct MapKitMapView: View {
         self.onCameraMoveStart = onCameraMoveStart
         self.onCameraMove = onCameraMove
         self.onCameraMoveEnd = onCameraMoveEnd
+        self.sdkInitialize = sdkInitialize
         self.content = content
     }
 
@@ -43,6 +46,7 @@ public struct MapKitMapView: View {
                 onCameraMoveStart: onCameraMoveStart,
                 onCameraMove: onCameraMove,
                 onCameraMoveEnd: onCameraMoveEnd,
+                sdkInitialize: sdkInitialize,
                 content: mapContent
             )
             ForEach(0..<mapContent.views.count, id: \.self) { index in
@@ -60,6 +64,7 @@ private struct MapKitMapViewRepresentable: UIViewRepresentable {
     let onCameraMoveStart: OnCameraMoveHandler?
     let onCameraMove: OnCameraMoveHandler?
     let onCameraMoveEnd: OnCameraMoveHandler?
+    let sdkInitialize: (() -> Void)?
     let content: MapViewContent
 
     func makeCoordinator() -> Coordinator {
@@ -74,6 +79,10 @@ private struct MapKitMapViewRepresentable: UIViewRepresentable {
     }
 
     func makeUIView(context: Context) -> MKMapView {
+        if let sdkInitialize {
+            Coordinator.runOnce(sdkInitialize)
+        }
+
         let mapView = MKMapView(frame: .zero)
         mapView.mapType = state.mapDesignType.getValue()
         mapView.delegate = context.coordinator
@@ -147,6 +156,8 @@ private struct MapKitMapViewRepresentable: UIViewRepresentable {
         private var markerIcons: [String: BitmapIcon] = [:]
         private var markerStates: [String: MarkerState] = [:]
 
+        private static var hasInitializedSdk = false
+
         private var strategyMarkerController:
             StrategyMarkerController<
                 MKPointAnnotation,
@@ -172,6 +183,12 @@ private struct MapKitMapViewRepresentable: UIViewRepresentable {
             self.onCameraMoveStart = onCameraMoveStart
             self.onCameraMove = onCameraMove
             self.onCameraMoveEnd = onCameraMoveEnd
+        }
+
+        static func runOnce(_ initializer: () -> Void) {
+            if hasInitializedSdk { return }
+            hasInitializedSdk = true
+            initializer()
         }
 
         func bind(state: MapKitViewState, mapView: MKMapView) {

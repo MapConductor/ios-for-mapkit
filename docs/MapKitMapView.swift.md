@@ -1,7 +1,8 @@
 # MapKitMapView
 
 A SwiftUI view that renders a MapKit map. Accepts a declarative overlay tree via
-`@MapViewContentBuilder`. No API key or SDK initialization is required.
+`@MapViewContentBuilder`. MapKit does not require an API key, but the view supports
+`sdkInitialize` for parity with the other provider views.
 
 ## Signature
 
@@ -14,6 +15,7 @@ public struct MapKitMapView: View {
         onCameraMoveStart: OnCameraMoveHandler? = nil,
         onCameraMove: OnCameraMoveHandler? = nil,
         onCameraMoveEnd: OnCameraMoveHandler? = nil,
+        sdkInitialize: (() -> Void)? = nil,
         @MapViewContentBuilder content: @escaping () -> MapViewContent = { MapViewContent() }
     )
 }
@@ -45,6 +47,11 @@ public struct MapKitMapView: View {
     - Type: `OnCameraMoveHandler?`
     - Default: `nil`
     - Description: Called with the final camera position when movement ends.
+- `sdkInitialize`
+    - Type: `(() -> Void)?`
+    - Default: `nil`
+    - Description: Optional initialization closure. It is executed once before the native
+      `MKMapView` is created.
 - `content`
     - Type: `@MapViewContentBuilder () -> MapViewContent`
     - Default: empty
@@ -53,7 +60,8 @@ public struct MapKitMapView: View {
 
 ## Notes
 
-- `MapKitMapView` does **not** have an `sdkInitialize` parameter. MapKit requires no API key.
+- MapKit requires no API key for basic map display.
+- `sdkInitialize` is still called when provided, so applications can use the same provider setup path across map SDKs.
 
 ## Example
 
