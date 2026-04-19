@@ -1,9 +1,3 @@
-# MapCameraPositionExtensions
-
-Extensions that convert between the SDK's `MapCameraPosition` type and MapKit camera types.
-
----
-
 # MapCameraPosition extension
 
 ## `toMKMapCamera()`
