@@ -109,6 +109,11 @@ final class MapKitViewController: MapViewControllerProtocol {
     func notifyMapClick(_ point: GeoPoint) {
         mapClickListener?(point)
     }
+
+    func notifyMapLongClick(_ point: GeoPoint) {
+        mapLongClickListener?(point)
+    }
+
     private func applyTopDownZoom(position: MapCameraPosition, mapView: MKMapView, animated: Bool, duration: Double = 0.0) -> Bool {
         // For top-down cameras, setVisibleMapRect can match Google/WebMercator zoom precisely (including latitude scaling)
         // based on the viewport size. This avoids relying on a single magic constant (zoom0Altitude) for MapKit.

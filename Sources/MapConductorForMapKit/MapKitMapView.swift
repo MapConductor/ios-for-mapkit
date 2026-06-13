@@ -10,6 +10,7 @@ public struct MapKitMapView: View {
 
     private let onMapLoaded: OnMapLoadedHandler<MapKitViewState>?
     private let onMapClick: OnMapEventHandler?
+    private let onMapLongClick: OnMapEventHandler?
     private let onCameraMoveStart: OnCameraMoveHandler?
     private let onCameraMove: OnCameraMoveHandler?
     private let onCameraMoveEnd: OnCameraMoveHandler?
@@ -20,6 +21,7 @@ public struct MapKitMapView: View {
         state: MapKitViewState,
         onMapLoaded: OnMapLoadedHandler<MapKitViewState>? = nil,
         onMapClick: OnMapEventHandler? = nil,
+        onMapLongClick: OnMapEventHandler? = nil,
         onCameraMoveStart: OnCameraMoveHandler? = nil,
         onCameraMove: OnCameraMoveHandler? = nil,
         onCameraMoveEnd: OnCameraMoveHandler? = nil,
@@ -29,6 +31,7 @@ public struct MapKitMapView: View {
         self.state = state
         self.onMapLoaded = onMapLoaded
         self.onMapClick = onMapClick
+        self.onMapLongClick = onMapLongClick
         self.onCameraMoveStart = onCameraMoveStart
         self.onCameraMove = onCameraMove
         self.onCameraMoveEnd = onCameraMoveEnd
@@ -43,6 +46,7 @@ public struct MapKitMapView: View {
                 state: state,
                 onMapLoaded: onMapLoaded,
                 onMapClick: onMapClick,
+                onMapLongClick: onMapLongClick,
                 onCameraMoveStart: onCameraMoveStart,
                 onCameraMove: onCameraMove,
                 onCameraMoveEnd: onCameraMoveEnd,
@@ -61,6 +65,7 @@ private struct MapKitMapViewRepresentable: UIViewRepresentable {
 
     let onMapLoaded: OnMapLoadedHandler<MapKitViewState>?
     let onMapClick: OnMapEventHandler?
+    let onMapLongClick: OnMapEventHandler?
     let onCameraMoveStart: OnCameraMoveHandler?
     let onCameraMove: OnCameraMoveHandler?
     let onCameraMoveEnd: OnCameraMoveHandler?
@@ -72,6 +77,7 @@ private struct MapKitMapViewRepresentable: UIViewRepresentable {
             state: state,
             onMapLoaded: onMapLoaded,
             onMapClick: onMapClick,
+            onMapLongClick: onMapLongClick,
             onCameraMoveStart: onCameraMoveStart,
             onCameraMove: onCameraMove,
             onCameraMoveEnd: onCameraMoveEnd
@@ -94,6 +100,13 @@ private struct MapKitMapViewRepresentable: UIViewRepresentable {
         let tapGesture = UITapGestureRecognizer(target: context.coordinator, action: #selector(Coordinator.handleMapTap(_:)))
         tapGesture.cancelsTouchesInView = false
         mapView.addGestureRecognizer(tapGesture)
+
+        let longPressGesture = UILongPressGestureRecognizer(
+            target: context.coordinator,
+            action: #selector(Coordinator.handleMapLongPress(_:))
+        )
+        longPressGesture.cancelsTouchesInView = false
+        mapView.addGestureRecognizer(longPressGesture)
 
         context.coordinator.attachInfoBubbleContainer(to: mapView)
         context.coordinator.mapView = mapView
@@ -127,6 +140,7 @@ private struct MapKitMapViewRepresentable: UIViewRepresentable {
         private let state: MapKitViewState
         private let onMapLoaded: OnMapLoadedHandler<MapKitViewState>?
         private let onMapClick: OnMapEventHandler?
+        private let onMapLongClick: OnMapEventHandler?
         private let onCameraMoveStart: OnCameraMoveHandler?
         private let onCameraMove: OnCameraMoveHandler?
         private let onCameraMoveEnd: OnCameraMoveHandler?
@@ -173,6 +187,7 @@ private struct MapKitMapViewRepresentable: UIViewRepresentable {
             state: MapKitViewState,
             onMapLoaded: OnMapLoadedHandler<MapKitViewState>?,
             onMapClick: OnMapEventHandler?,
+            onMapLongClick: OnMapEventHandler?,
             onCameraMoveStart: OnCameraMoveHandler?,
             onCameraMove: OnCameraMoveHandler?,
             onCameraMoveEnd: OnCameraMoveHandler?
@@ -180,6 +195,7 @@ private struct MapKitMapViewRepresentable: UIViewRepresentable {
             self.state = state
             self.onMapLoaded = onMapLoaded
             self.onMapClick = onMapClick
+            self.onMapLongClick = onMapLongClick
             self.onCameraMoveStart = onCameraMoveStart
             self.onCameraMove = onCameraMove
             self.onCameraMoveEnd = onCameraMoveEnd
@@ -480,6 +496,24 @@ private struct MapKitMapViewRepresentable: UIViewRepresentable {
             let geoPoint = GeoPoint(latitude: coordinate.latitude, longitude: coordinate.longitude, altitude: 0)
             controller?.notifyMapClick(geoPoint)
             onMapClick?(geoPoint)
+        }
+
+        @objc func handleMapLongPress(_ recognizer: UILongPressGestureRecognizer) {
+            guard let mapView = mapView, recognizer.state == .began else { return }
+            let point = recognizer.location(in: mapView)
+
+            if let hitView = mapView.hitTest(point, with: nil) {
+                var view: UIView? = hitView
+                while let current = view {
+                    if current is MKAnnotationView { return }
+                    view = current.superview
+                }
+            }
+
+            let coordinate = mapView.convert(point, toCoordinateFrom: mapView)
+            let geoPoint = GeoPoint(latitude: coordinate.latitude, longitude: coordinate.longitude, altitude: 0)
+            controller?.notifyMapLongClick(geoPoint)
+            onMapLongClick?(geoPoint)
         }
 
         // MARK: - Annotation Delegate Methods
