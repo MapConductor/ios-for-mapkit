@@ -462,6 +462,7 @@ private struct MapKitMapViewRepresentable: UIViewRepresentable {
 
             if !didCallMapLoaded {
                 didCallMapLoaded = true
+                controller?.notifyMapInitialized()
                 onMapLoaded?(state)
             }
         }

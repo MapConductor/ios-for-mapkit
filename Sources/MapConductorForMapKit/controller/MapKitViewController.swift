@@ -22,6 +22,7 @@ final class MapKitViewController: MapViewControllerProtocol {
     private var cameraMoveEndListener: OnCameraMoveHandler?
     private var mapClickListener: OnMapEventHandler?
     private var mapLongClickListener: OnMapEventHandler?
+    private var mapInitializedListener: OnMapInitializedHandler?
 
     init(mapView: MKMapView) {
         self.mapView = mapView
@@ -56,6 +57,10 @@ final class MapKitViewController: MapViewControllerProtocol {
 
     func setMapLongClickListener(listener: OnMapEventHandler?) {
         mapLongClickListener = listener
+    }
+
+    func setMapInitializedListener(listener: OnMapInitializedHandler?) {
+        mapInitializedListener = listener
     }
 
     func moveCamera(position: MapCameraPosition) {
@@ -112,6 +117,10 @@ final class MapKitViewController: MapViewControllerProtocol {
 
     func notifyMapLongClick(_ point: GeoPoint) {
         mapLongClickListener?(point)
+    }
+
+    func notifyMapInitialized() {
+        mapInitializedListener?(.MapCreated)
     }
 
     private func applyTopDownZoom(position: MapCameraPosition, mapView: MKMapView, animated: Bool, duration: Double = 0.0) -> Bool {
