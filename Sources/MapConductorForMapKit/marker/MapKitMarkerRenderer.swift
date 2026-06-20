@@ -54,7 +54,7 @@ final class MapKitMarkerRenderer: MarkerOverlayRendererProtocol {
         if !data.isEmpty { MCLog.marker("MapKitMarkerRenderer.onChange count=\(data.count)") }
         let now = CACurrentMediaTime()
         if now - lastChangeBatchTime < Self.minAnimationUpdateInterval {
-            pendingChangeParams = data
+            mergePendingChanges(data)
             schedulePendingChanges(after: Self.minAnimationUpdateInterval - (now - lastChangeBatchTime))
             return data.map { $0.prev.marker }
         }
@@ -290,6 +290,20 @@ final class MapKitMarkerRenderer: MarkerOverlayRendererProtocol {
             }
 
             return annotation
+        }
+    }
+
+    private func mergePendingChanges(_ data: [MarkerOverlayChangeParams<MKPointAnnotation>]) {
+        // Multiple markers can each request a change within the same throttle window
+        // (e.g. several markers moving on one camera update). Merge by marker id instead
+        // of overwriting the whole batch, otherwise only the last-processed marker's
+        // change would survive and the others would appear "stuck".
+        for params in data {
+            if let index = pendingChangeParams.firstIndex(where: { $0.current.state.id == params.current.state.id }) {
+                pendingChangeParams[index] = params
+            } else {
+                pendingChangeParams.append(params)
+            }
         }
     }
 
