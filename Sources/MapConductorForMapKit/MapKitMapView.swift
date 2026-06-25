@@ -174,15 +174,12 @@ private struct MapKitMapViewRepresentable: UIViewRepresentable {
 
         private static var hasInitializedSdk = false
 
-        private var strategyMarkerController:
-            StrategyMarkerController<
-                MKPointAnnotation,
-                AnyMarkerRenderingStrategy<MKPointAnnotation>,
-                MapKitMarkerRenderer
-            >?
-        private var strategyMarkerRenderer: MapKitMarkerRenderer?
-        private var strategyMarkerSubscriptions: [String: AnyCancellable] = [:]
-        private var strategyMarkerStatesById: [String: MarkerState] = [:]
+        private lazy var strategyManager = StrategyMarkerManager<MKPointAnnotation, MapKitMarkerRenderer>(
+            makeRenderer: { [weak self] strategy in
+                guard let mapView = self?.mapView else { fatalError("mapView unavailable") }
+                return MapKitMarkerRenderer(mapView: mapView, markerManager: strategy.markerManager)
+            }
+        )
         private var strategyMarkerIcons: [String: BitmapIcon] = [:]
 
         init(
@@ -297,14 +294,8 @@ private struct MapKitMapViewRepresentable: UIViewRepresentable {
             markerIcons.removeAll()
             markerStates.removeAll()
 
-            strategyMarkerSubscriptions.values.forEach { $0.cancel() }
-            strategyMarkerSubscriptions.removeAll()
-            strategyMarkerStatesById.removeAll()
             strategyMarkerIcons.removeAll()
-            strategyMarkerRenderer?.unbind()
-            strategyMarkerRenderer = nil
-            strategyMarkerController?.destroy()
-            strategyMarkerController = nil
+            strategyManager.clear()
         }
 
         func updateContent(_ content: MapViewContent) {
@@ -325,103 +316,19 @@ private struct MapKitMapViewRepresentable: UIViewRepresentable {
 
             markerController?.tilingOptions = content.markerTilingOptions
             markerController?.syncMarkers(content.markers)
-            updateStrategyRendering(content)
+            if let mapView {
+                strategyManager.update(content: content, initialCamera: currentCameraPosition(from: mapView))
+                strategyMarkerIcons = Dictionary(
+                    uniqueKeysWithValues: content.markerRenderingMarkers.map {
+                        ($0.id, ($0.icon ?? DefaultMarkerIcon()).toBitmapIcon())
+                    }
+                )
+            }
             circleController?.syncCircles(content.circles)
             polylineController?.syncPolylines(content.polylines)
             polygonController?.syncPolygons(content.polygons)
             rasterLayerController?.syncRasterLayers(content.rasterLayers)
             groundImageController?.syncGroundImages(content.groundImages)
-        }
-
-        private func updateStrategyRendering(_ content: MapViewContent) {
-            guard let mapView else { return }
-            if let strategy = content.markerRenderingStrategy as? AnyMarkerRenderingStrategy<MKPointAnnotation> {
-                MCLog.map("MapKitMapView.updateStrategyRendering enabled markers=\(content.markerRenderingMarkers.count)")
-                if strategyMarkerController == nil ||
-                    strategyMarkerController?.markerManager !== strategy.markerManager {
-                    MCLog.map("MapKitMapView.updateStrategyRendering createController")
-                    strategyMarkerRenderer?.unbind()
-                    let renderer = MapKitMarkerRenderer(
-                        mapView: mapView,
-                        markerManager: strategy.markerManager
-                    )
-                    strategyMarkerRenderer = renderer
-                    let controller = StrategyMarkerController(strategy: strategy, renderer: renderer)
-                    strategyMarkerController = controller
-                    Task { [weak self] in
-                        guard let self else { return }
-                        await controller.onCameraChanged(mapCameraPosition: self.currentCameraPosition(from: mapView))
-                    }
-                }
-                syncStrategyMarkers(content.markerRenderingMarkers)
-            } else {
-                if content.markerRenderingStrategy != nil {
-                    MCLog.map("MapKitMapView.updateStrategyRendering strategyTypeMismatch type=\(type(of: content.markerRenderingStrategy!))")
-                }
-                strategyMarkerSubscriptions.values.forEach { $0.cancel() }
-                strategyMarkerSubscriptions.removeAll()
-                strategyMarkerStatesById.removeAll()
-                strategyMarkerIcons.removeAll()
-                strategyMarkerRenderer?.unbind()
-                strategyMarkerRenderer = nil
-                strategyMarkerController?.destroy()
-                strategyMarkerController = nil
-            }
-        }
-
-        private func syncStrategyMarkers(_ markers: [MarkerState]) {
-            guard let controller = strategyMarkerController else { return }
-            MCLog.map("MapKitMapView.syncStrategyMarkers count=\(markers.count)")
-            let newIds = Set(markers.map { $0.id })
-            let oldIds = Set(strategyMarkerStatesById.keys)
-            var shouldSyncList = newIds != oldIds
-
-            var newStatesById: [String: MarkerState] = [:]
-            var newIcons: [String: BitmapIcon] = [:]
-            for state in markers {
-                if let existing = strategyMarkerStatesById[state.id], existing !== state {
-                    strategyMarkerSubscriptions[state.id]?.cancel()
-                    strategyMarkerSubscriptions.removeValue(forKey: state.id)
-                    shouldSyncList = true
-                }
-                newStatesById[state.id] = state
-                newIcons[state.id] = (state.icon ?? DefaultMarkerIcon()).toBitmapIcon()
-            }
-            strategyMarkerStatesById = newStatesById
-            strategyMarkerIcons = newIcons
-
-            let removedIds = oldIds.subtracting(newIds)
-            for id in removedIds {
-                strategyMarkerSubscriptions[id]?.cancel()
-                strategyMarkerSubscriptions.removeValue(forKey: id)
-            }
-
-            if shouldSyncList {
-                Task { [weak self] in
-                    guard let self else { return }
-                    MCLog.map("MapKitMapView.syncStrategyMarkers -> add() count=\(markers.count)")
-                    await controller.add(data: markers)
-                }
-            }
-
-            for state in markers {
-                subscribeToStrategyMarker(state)
-            }
-        }
-
-        private func subscribeToStrategyMarker(_ state: MarkerState) {
-            guard strategyMarkerSubscriptions[state.id] == nil else { return }
-            strategyMarkerSubscriptions[state.id] = state.asFlow()
-                .dropFirst()
-                .receive(on: DispatchQueue.main)
-                .sink { [weak self] _ in
-                    guard let self else { return }
-                    guard self.strategyMarkerStatesById[state.id] != nil else { return }
-                    Task { [weak self] in
-                        guard let self else { return }
-                        await self.strategyMarkerController?.update(state: state)
-                    }
-                }
         }
 
         // MARK: - MKMapViewDelegate
@@ -444,7 +351,7 @@ private struct MapKitMapViewRepresentable: UIViewRepresentable {
             onCameraMove?(camera)
             Task { [weak self] in
                 guard let self else { return }
-                await self.strategyMarkerController?.onCameraChanged(mapCameraPosition: camera)
+                await self.strategyManager.onCameraChanged(camera)
             }
             updateInfoBubbleLayouts()
         }
@@ -457,7 +364,7 @@ private struct MapKitMapViewRepresentable: UIViewRepresentable {
             onCameraMoveEnd?(camera)
             Task { [weak self] in
                 guard let self else { return }
-                await self.strategyMarkerController?.onCameraChanged(mapCameraPosition: camera)
+                await self.strategyManager.onCameraChanged(camera)
             }
             updateInfoBubbleLayouts()
             isRegionChanging = false
@@ -533,7 +440,7 @@ private struct MapKitMapViewRepresentable: UIViewRepresentable {
             let markerIdString = mapConductorAnnotation?.markerId ?? pointAnnotation.title ?? ""
             let markerState = markerController?.getMarkerState(for: markerIdString)
                 ?? markerStates[markerIdString]
-                ?? strategyMarkerStatesById[markerIdString]
+                ?? strategyManager.controller?.markerManager.getEntity(markerIdString)?.state
                 ?? mapConductorAnnotation?.markerState
             let cachedIcon = markerIcons[markerIdString] ?? mapConductorAnnotation?.initialBitmapIcon
                 ?? strategyMarkerIcons[markerIdString]
@@ -553,7 +460,7 @@ private struct MapKitMapViewRepresentable: UIViewRepresentable {
                 if markerController?.getMarkerState(for: markerIdString) != nil || markerStates[markerIdString] != nil {
                     markerController?.renderer.configureAnnotationView(annotationView, for: markerState, bitmapIcon: resolvedIcon)
                 } else {
-                    strategyMarkerRenderer?.configureAnnotationView(annotationView, for: markerState, bitmapIcon: resolvedIcon)
+                    strategyManager.renderer?.configureAnnotationView(annotationView, for: markerState, bitmapIcon: resolvedIcon)
                 }
             } else {
                 annotationView.image = resolvedIcon.bitmap
@@ -579,7 +486,7 @@ private struct MapKitMapViewRepresentable: UIViewRepresentable {
                   let markerId = pointAnnotation.title,
                   let markerState = markerController?.getMarkerState(for: markerId)
                     ?? markerStates[markerId]
-                    ?? strategyMarkerStatesById[markerId] else {
+                    ?? strategyManager.controller?.markerManager.getEntity(markerId)?.state else {
                 return
             }
 
