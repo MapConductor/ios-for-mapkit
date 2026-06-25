@@ -3,6 +3,7 @@ import CoreLocation
 import MapKit
 import MapConductorCore
 import QuartzCore
+import UIKit
 
 final class MapKitViewController: MapViewControllerProtocol {
     let holder: AnyMapViewHolder
@@ -97,6 +98,22 @@ final class MapKitViewController: MapViewControllerProtocol {
         let displayLink = CADisplayLink(target: self, selector: #selector(onCameraAnimationTick(_:)))
         displayLink.add(to: .main, forMode: .common)
         cameraAnimationDisplayLink = displayLink
+    }
+
+    func fitBounds(bounds: GeoRectBounds, padding: Int) {
+        guard let mapView = mapView,
+              let sw = bounds.southWest,
+              let ne = bounds.northEast else { return }
+        let swPoint = MKMapPoint(CLLocationCoordinate2D(latitude: sw.latitude, longitude: sw.longitude))
+        let nePoint = MKMapPoint(CLLocationCoordinate2D(latitude: ne.latitude, longitude: ne.longitude))
+        let rect = MKMapRect(
+            x: min(swPoint.x, nePoint.x),
+            y: min(nePoint.y, swPoint.y),
+            width: abs(nePoint.x - swPoint.x),
+            height: abs(swPoint.y - nePoint.y)
+        )
+        let edgePadding = UIEdgeInsets(top: CGFloat(padding), left: CGFloat(padding), bottom: CGFloat(padding), right: CGFloat(padding))
+        mapView.setVisibleMapRect(rect, edgePadding: edgePadding, animated: false)
     }
 
     func notifyCameraMoveStart(_ cameraPosition: MapCameraPosition) {

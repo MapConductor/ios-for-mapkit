@@ -91,6 +91,7 @@ private struct MapKitMapViewRepresentable: UIViewRepresentable {
 
         let mapView = MKMapView(frame: .zero)
         mapView.mapType = state.mapDesignType.getValue()
+        mapView.isScrollEnabled = state.uiSettings.scrollGesture
         mapView.delegate = context.coordinator
 
         // Use the extension method to properly set camera with tilt and bearing
@@ -119,6 +120,7 @@ private struct MapKitMapViewRepresentable: UIViewRepresentable {
 
     func updateUIView(_ uiView: MKMapView, context: Context) {
         uiView.mapType = state.mapDesignType.getValue()
+        uiView.isScrollEnabled = state.uiSettings.scrollGesture
         MCLog.map("MapKitMapView.updateUIView updateContent markers=\(content.markers.count) bubbles=\(content.infoBubbles.count)")
         context.coordinator.updateContent(content)
         context.coordinator.updateInfoBubbleLayouts()
