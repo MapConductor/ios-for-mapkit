@@ -20,6 +20,11 @@ final class MapKitMarkerRenderer: MarkerOverlayRendererProtocol {
     private var pendingChangeParams: [MarkerOverlayChangeParams<MKPointAnnotation>] = []
     private var pendingChangeTask: Task<Void, Never>?
 
+    /// When set, drop/bounce animations run on the screen-space overlay layer
+    /// (projection-independent: correct on tilted/rotated views) and the
+    /// native marker stays hidden for the duration.
+    var animationOverlay: MarkerAnimationOverlayCoordinator?
+
     var animateStartListener: OnMarkerEventHandler?
     var animateEndListener: OnMarkerEventHandler?
 
@@ -100,6 +105,36 @@ final class MapKitMarkerRenderer: MarkerOverlayRendererProtocol {
         duration: CFTimeInterval
     ) async {
         guard let mapView, let annotation = entity.marker else { return }
+
+        // Preferred path: animate the marker image on the screen-space overlay.
+        // Projection-independent, so rotated/tilted cameras stay correct. The
+        // annotation view stays hidden (alpha 0, set for pending animations)
+        // and is revealed at the target when the overlay finishes.
+        if let overlay = animationOverlay {
+            let target = CLLocationCoordinate2D(
+                latitude: entity.state.position.latitude,
+                longitude: entity.state.position.longitude
+            )
+            annotation.coordinate = target
+            mapView.view(for: annotation)?.alpha = 0
+            animateStartListener?(entity.state)
+            let icon = (entity.state.icon ?? DefaultMarkerIcon()).toBitmapIcon()
+            overlay.start(MarkerAnimationOverlayEntry(
+                id: entity.state.id,
+                state: entity.state,
+                icon: icon,
+                animation: animation,
+                duration: duration,
+                onFinished: { [weak self, weak mapView] in
+                    annotation.coordinate = target
+                    entity.state.animate(nil)
+                    mapView?.view(for: annotation)?.alpha = 1
+                    self?.animateEndListener?(entity.state)
+                }
+            ))
+            return
+        }
+
         guard let annotationView = mapView.view(for: annotation) else {
             await deferAnimate(entity: entity)
             return

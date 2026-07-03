@@ -234,6 +234,18 @@ private struct MapKitMapViewRepresentable: UIViewRepresentable {
                 }
             )
 
+            // Screen-space marker animation layer: shares the info-bubble
+            // container (inserted below the bubbles) and the map projection.
+            markerController.renderer.animationOverlay = MarkerAnimationOverlayCoordinator(
+                container: infoBubbleContainer,
+                project: { [weak self] point in
+                    guard let mapView = self?.mapView else { return nil }
+                    let coordinate = CLLocationCoordinate2D(latitude: point.latitude, longitude: point.longitude)
+                    let p = mapView.convert(coordinate, toPointTo: mapView)
+                    return (p.x.isFinite && p.y.isFinite) ? p : nil
+                }
+            )
+
             let circleController = MapKitCircleController(mapView: mapView)
             self.circleController = circleController
 
@@ -278,6 +290,8 @@ private struct MapKitMapViewRepresentable: UIViewRepresentable {
             state.setMapViewHolder(nil)
             controller = nil
             markerController?.unbind()
+            markerController?.renderer.animationOverlay?.unbind()
+            markerController?.renderer.animationOverlay = nil
             markerController = nil
             infoBubbleCoordinator?.unbind()
             infoBubbleCoordinator = nil

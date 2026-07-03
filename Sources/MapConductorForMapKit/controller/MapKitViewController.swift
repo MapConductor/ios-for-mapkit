@@ -190,25 +190,40 @@ final class MapKitViewController: MapViewControllerProtocol {
 
         let rect = MKMapRect(x: originX, y: originY, width: clampedWidth, height: clampedHeight)
 
-        // Apply heading explicitly (including 0) without changing scale.
-        var camera = mapView.camera
-        camera.centerCoordinate = centerCoordinate
-        camera.heading = position.bearing
-        camera.pitch = 0
-
         if animated && duration > 0 {
             // Use UIView.animate to respect the specified duration
             UIView.animate(withDuration: duration) {
                 mapView.setVisibleMapRect(rect, edgePadding: .zero, animated: false)
-                mapView.setCamera(camera, animated: false)
+                Self.applyHeading(position.bearing, center: centerCoordinate, to: mapView, animated: false)
             }
         } else {
             // Use MapKit's default animation or no animation
             mapView.setVisibleMapRect(rect, edgePadding: .zero, animated: animated)
-            mapView.setCamera(camera, animated: animated)
+            Self.applyHeading(position.bearing, center: centerCoordinate, to: mapView, animated: animated)
         }
 
         return true
+    }
+
+    /// Applies heading (including 0) on top of the scale established by
+    /// setVisibleMapRect. A fresh MKMapCamera is required: mutating the map
+    /// view's own camera instance and re-setting it can be treated as a no-op
+    /// by MapKit (the heading silently never applies), and the altitude must
+    /// be read AFTER the visible rect changed the scale — the previous
+    /// implementation captured it before, reverting the zoom.
+    private static func applyHeading(
+        _ heading: Double,
+        center: CLLocationCoordinate2D,
+        to mapView: MKMapView,
+        animated: Bool
+    ) {
+        let camera = MKMapCamera(
+            lookingAtCenter: center,
+            fromDistance: mapView.camera.altitude,
+            pitch: 0,
+            heading: heading
+        )
+        mapView.setCamera(camera, animated: animated)
     }
 
     private func cancelCameraAnimation() {
