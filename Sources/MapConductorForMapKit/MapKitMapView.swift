@@ -154,6 +154,7 @@ private struct MapKitMapViewRepresentable: UIViewRepresentable {
         private var circleController: MapKitCircleController?
         private var polylineController: MapKitPolylineController?
         private var polygonController: MapKitPolygonController?
+        private var hullPolygonController: MapKitPolygonController?
         private var rasterLayerController: MapKitRasterLayerController?
         private var groundImageController: MapKitGroundImageController?
 
@@ -254,6 +255,7 @@ private struct MapKitMapViewRepresentable: UIViewRepresentable {
 
             let polygonController = MapKitPolygonController(mapView: mapView)
             self.polygonController = polygonController
+            self.hullPolygonController = MapKitPolygonController(mapView: mapView)
 
             let rasterLayerController = MapKitRasterLayerController(mapView: mapView)
             self.rasterLayerController = rasterLayerController
@@ -301,6 +303,8 @@ private struct MapKitMapViewRepresentable: UIViewRepresentable {
             polylineController = nil
             polygonController?.unbind()
             polygonController = nil
+            hullPolygonController?.unbind()
+            hullPolygonController = nil
             rasterLayerController?.unbind()
             rasterLayerController = nil
             groundImageController?.unbind()
@@ -341,6 +345,12 @@ private struct MapKitMapViewRepresentable: UIViewRepresentable {
             circleController?.syncCircles(content.circles)
             polylineController?.syncPolylines(content.polylines)
             polygonController?.syncPolygons(content.polygons)
+            for handler in content.polygonSyncHandlers {
+                let hullController = hullPolygonController
+                handler.bindPolygonSync { [weak hullController] states in
+                    await hullController?.add(data: states)
+                }
+            }
             rasterLayerController?.syncRasterLayers(content.rasterLayers)
             groundImageController?.syncGroundImages(content.groundImages)
         }
@@ -579,6 +589,10 @@ private struct MapKitMapViewRepresentable: UIViewRepresentable {
             }
             // Check if it's a polygon overlay
             if let renderer = polygonController?.renderer.renderer(for: overlay) {
+                return renderer
+            }
+            // Check if it's a cluster debug hull polygon overlay
+            if let renderer = hullPolygonController?.renderer.renderer(for: overlay) {
                 return renderer
             }
             // Default renderer
