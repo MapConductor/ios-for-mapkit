@@ -9,6 +9,7 @@ final class MapKitViewController: MapViewControllerProtocol {
     let holder: AnyMapViewHolder
     let coroutine = CoroutineScope()
     private weak var mapView: MKMapView?
+    private(set) var lastLogicalTilt: Double?
     private let tileSizePoints: Double = 256.0
     private let minCosLat: Double = 0.01
 
@@ -67,6 +68,7 @@ final class MapKitViewController: MapViewControllerProtocol {
     func moveCamera(position: MapCameraPosition) {
         cancelCameraAnimation()
         guard let mapView = mapView else { return }
+        lastLogicalTilt = position.tilt
         if abs(position.tilt) < 0.01, mapView.bounds.isEmpty {
             DispatchQueue.main.async { [weak self, weak mapView] in
                 guard let self, let mapView else { return }
@@ -76,7 +78,7 @@ final class MapKitViewController: MapViewControllerProtocol {
         if applyTopDownZoom(position: position, mapView: mapView, animated: false) {
             return
         }
-        let camera = position.toMKMapCamera()
+        let camera = position.toMKMapCamera(on: mapView)
         mapView.setCamera(camera, animated: false)
     }
 
@@ -89,7 +91,8 @@ final class MapKitViewController: MapViewControllerProtocol {
             return
         }
 
-        let from = mapView.toMapCameraPosition()
+        let from = mapView.toMapCameraPosition(logicalTiltHint: lastLogicalTilt)
+        lastLogicalTilt = position.tilt
         cameraAnimationFrames = makeCameraAnimationFrames(from: from, to: position, durationSeconds: durationSeconds)
         cameraAnimationStartTime = CACurrentMediaTime()
         cameraAnimationDurationSeconds = durationSeconds
@@ -219,7 +222,9 @@ final class MapKitViewController: MapViewControllerProtocol {
     ) {
         let camera = MKMapCamera(
             lookingAtCenter: center,
-            fromDistance: mapView.camera.altitude,
+            // centerCoordinateDistance, not altitude: if the current camera still has pitch,
+            // altitude is the smaller vertical component and would zoom the map in by cos(pitch).
+            fromDistance: mapView.camera.centerCoordinateDistance,
             pitch: 0,
             heading: heading
         )
@@ -264,11 +269,12 @@ final class MapKitViewController: MapViewControllerProtocol {
     }
 
     private func applyCameraFrame(_ position: MapCameraPosition, mapView: MKMapView) {
+        lastLogicalTilt = position.tilt
         // One-step move (no MapKit internal animation). This is the basis for our custom duration-controlled animation.
         if applyTopDownZoom(position: position, mapView: mapView, animated: false) {
             return
         }
-        let camera = position.toMKMapCamera()
+        let camera = position.toMKMapCamera(on: mapView)
         mapView.setCamera(camera, animated: false)
     }
 

@@ -95,7 +95,7 @@ private struct MapKitMapViewRepresentable: UIViewRepresentable {
         mapView.delegate = context.coordinator
 
         // Use the extension method to properly set camera with tilt and bearing
-        let camera = state.cameraPosition.toMKMapCamera()
+        let camera = state.cameraPosition.toMKMapCamera(on: mapView)
         mapView.setCamera(camera, animated: false)
 
         let tapGesture = UITapGestureRecognizer(target: context.coordinator, action: #selector(Coordinator.handleMapTap(_:)))
@@ -368,7 +368,7 @@ private struct MapKitMapViewRepresentable: UIViewRepresentable {
 
         func mapViewDidChangeVisibleRegion(_ mapView: MKMapView) {
             guard isRegionChanging else { return }
-            let camera = mapView.toMapCameraPosition()
+            let camera = mapView.toMapCameraPosition(logicalTiltHint: controller?.lastLogicalTilt)
             state.updateCameraPosition(camera)
             polylineController?.setCurrentCameraPosition(camera)
             controller?.notifyCameraMove(camera)
@@ -678,7 +678,10 @@ private struct MapKitMapViewRepresentable: UIViewRepresentable {
                 farRight: geoPoint(at: CGPoint(x: mapView.bounds.maxX, y: 0), mapView: mapView)
             )
 
-            return mapView.toMapCameraPosition(visibleRegion: visibleRegion)
+            return mapView.toMapCameraPosition(
+                logicalTiltHint: controller?.lastLogicalTilt,
+                visibleRegion: visibleRegion
+            )
         }
 
         private func geoPoint(at point: CGPoint, mapView: MKMapView) -> GeoPoint? {
