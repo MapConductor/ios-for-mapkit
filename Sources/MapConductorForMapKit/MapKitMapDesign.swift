@@ -7,9 +7,11 @@ public typealias MapKitMapDesignType = any MapKitMapDesignTypeProtocol
 
 public struct MapKitMapDesign: MapKitMapDesignTypeProtocol, Hashable {
     public let id: MKMapType
+    public let attributionRules: [AttributionRule]
 
-    public init(id: MKMapType) {
+    public init(id: MKMapType, attributionRules: [AttributionRule] = []) {
         self.id = id
+        self.attributionRules = attributionRules
     }
 
     public func getValue() -> MKMapType {

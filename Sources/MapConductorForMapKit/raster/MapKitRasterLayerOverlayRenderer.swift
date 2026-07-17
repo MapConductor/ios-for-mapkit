@@ -167,7 +167,7 @@ final class MapKitRasterLayerOverlayRenderer: AbstractRasterLayerOverlayRenderer
                     tileSize: tileSize,
                     minZoom: tileJson.minzoom,
                     maxZoom: tileJson.maxzoom,
-                    attribution: nil,
+                    attributionRules: [],
                     scheme: scheme
                 )
             } catch {
