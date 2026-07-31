@@ -7,14 +7,7 @@ import UIKit
 
 public struct MapKitMapView: View {
     @ObservedObject private var state: MapKitViewState
-
-    private let onMapLoaded: OnMapLoadedHandler<MapKitViewState>?
-    private let onMapClick: OnMapEventHandler?
-    private let onMapLongClick: OnMapEventHandler?
-    private let onCameraMoveStart: OnCameraMoveHandler?
-    private let onCameraMove: OnCameraMoveHandler?
-    private let onCameraMoveEnd: OnCameraMoveHandler?
-    private let sdkInitialize: (() -> Void)?
+    private let handlers: MapViewHandlers<MapKitViewState>
     private let content: () -> MapViewContent
 
     public init(
@@ -29,37 +22,29 @@ public struct MapKitMapView: View {
         @MapViewContentBuilder content: @escaping () -> MapViewContent = { MapViewContent() }
     ) {
         self.state = state
-        self.onMapLoaded = onMapLoaded
-        self.onMapClick = onMapClick
-        self.onMapLongClick = onMapLongClick
-        self.onCameraMoveStart = onCameraMoveStart
-        self.onCameraMove = onCameraMove
-        self.onCameraMoveEnd = onCameraMoveEnd
-        self.sdkInitialize = sdkInitialize
+        self.handlers = MapViewHandlers(
+            onMapLoaded: onMapLoaded,
+            onMapClick: onMapClick,
+            onMapLongClick: onMapLongClick,
+            onCameraMoveStart: onCameraMoveStart,
+            onCameraMove: onCameraMove,
+            onCameraMoveEnd: onCameraMoveEnd,
+            sdkInitialize: sdkInitialize
+        )
         self.content = content
     }
 
     public var body: some View {
         let mapContent = content()
-        return ZStack {
+        return MapViewBase(
+            attributionRules: state.mapDesignType.attributionRules,
+            camera: state.cameraPosition,
+            content: mapContent
+        ) {
             MapKitMapViewRepresentable(
                 state: state,
-                onMapLoaded: onMapLoaded,
-                onMapClick: onMapClick,
-                onMapLongClick: onMapLongClick,
-                onCameraMoveStart: onCameraMoveStart,
-                onCameraMove: onCameraMove,
-                onCameraMoveEnd: onCameraMoveEnd,
-                sdkInitialize: sdkInitialize,
+                handlers: handlers,
                 content: mapContent
-            )
-            ForEach(0..<mapContent.views.count, id: \.self) { index in
-                mapContent.views[index]
-            }
-            MapAttributionOverlay(
-                designRules: state.mapDesignType.attributionRules,
-                rasterLayers: mapContent.rasterLayers,
-                camera: state.cameraPosition
             )
         }
     }
@@ -67,30 +52,15 @@ public struct MapKitMapView: View {
 
 private struct MapKitMapViewRepresentable: UIViewRepresentable {
     @ObservedObject var state: MapKitViewState
-
-    let onMapLoaded: OnMapLoadedHandler<MapKitViewState>?
-    let onMapClick: OnMapEventHandler?
-    let onMapLongClick: OnMapEventHandler?
-    let onCameraMoveStart: OnCameraMoveHandler?
-    let onCameraMove: OnCameraMoveHandler?
-    let onCameraMoveEnd: OnCameraMoveHandler?
-    let sdkInitialize: (() -> Void)?
+    let handlers: MapViewHandlers<MapKitViewState>
     let content: MapViewContent
 
     func makeCoordinator() -> Coordinator {
-        Coordinator(
-            state: state,
-            onMapLoaded: onMapLoaded,
-            onMapClick: onMapClick,
-            onMapLongClick: onMapLongClick,
-            onCameraMoveStart: onCameraMoveStart,
-            onCameraMove: onCameraMove,
-            onCameraMoveEnd: onCameraMoveEnd
-        )
+        Coordinator(state: state, handlers: handlers)
     }
 
     func makeUIView(context: Context) -> MKMapView {
-        if let sdkInitialize {
+        if let sdkInitialize = handlers.sdkInitialize {
             Coordinator.runOnce(sdkInitialize)
         }
 
@@ -143,15 +113,7 @@ private struct MapKitMapViewRepresentable: UIViewRepresentable {
     }
 
     @MainActor
-    final class Coordinator: NSObject, MKMapViewDelegate {
-        private let state: MapKitViewState
-        private let onMapLoaded: OnMapLoadedHandler<MapKitViewState>?
-        private let onMapClick: OnMapEventHandler?
-        private let onMapLongClick: OnMapEventHandler?
-        private let onCameraMoveStart: OnCameraMoveHandler?
-        private let onCameraMove: OnCameraMoveHandler?
-        private let onCameraMoveEnd: OnCameraMoveHandler?
-
+    final class Coordinator: MapViewCoordinatorBase<MapKitViewState>, MKMapViewDelegate {
         weak var mapView: MKMapView?
         private var controller: MapKitViewController?
         private var markerController: MapKitMarkerController?
@@ -162,11 +124,13 @@ private struct MapKitMapViewRepresentable: UIViewRepresentable {
         private var hullPolygonController: MapKitPolygonController?
         private var rasterLayerController: MapKitRasterLayerController?
         private var groundImageController: MapKitGroundImageController?
+        // Shared per-map collector model (parity with React/Android) for the
+        // simple overlays. Markers keep their specialized path (info bubble +
+        // tiling + strategy), so the marker collector is intentionally unused.
+        private var overlayScope: MapOverlayScope?
 
-        private var didCallMapLoaded = false
         private var isRegionChanging = false
         private var cameraObserver: NSKeyValueObservation?
-        private let infoBubbleContainer = PassthroughContainerView()
 
         private var draggingMarkerId: String?
         private weak var draggingAnnotationView: MKAnnotationView?
@@ -178,8 +142,6 @@ private struct MapKitMapViewRepresentable: UIViewRepresentable {
         private var markerIcons: [String: BitmapIcon] = [:]
         private var markerStates: [String: MarkerState] = [:]
 
-        private static var hasInitializedSdk = false
-
         private lazy var strategyManager = StrategyMarkerManager<MKPointAnnotation, MapKitMarkerRenderer>(
             makeRenderer: { [weak self] strategy in
                 guard let mapView = self?.mapView else { fatalError("mapView unavailable") }
@@ -188,35 +150,11 @@ private struct MapKitMapViewRepresentable: UIViewRepresentable {
         )
         private var strategyMarkerIcons: [String: BitmapIcon] = [:]
 
-        init(
-            state: MapKitViewState,
-            onMapLoaded: OnMapLoadedHandler<MapKitViewState>?,
-            onMapClick: OnMapEventHandler?,
-            onMapLongClick: OnMapEventHandler?,
-            onCameraMoveStart: OnCameraMoveHandler?,
-            onCameraMove: OnCameraMoveHandler?,
-            onCameraMoveEnd: OnCameraMoveHandler?
-        ) {
-            self.state = state
-            self.onMapLoaded = onMapLoaded
-            self.onMapClick = onMapClick
-            self.onMapLongClick = onMapLongClick
-            self.onCameraMoveStart = onCameraMoveStart
-            self.onCameraMove = onCameraMove
-            self.onCameraMoveEnd = onCameraMoveEnd
-        }
-
-        static func runOnce(_ initializer: () -> Void) {
-            if hasInitializedSdk { return }
-            hasInitializedSdk = true
-            initializer()
-        }
-
         func bind(state: MapKitViewState, mapView: MKMapView) {
             let controller = MapKitViewController(mapView: mapView)
             self.controller = controller
             state.setController(controller)
-            state.setMapViewHolder(controller.holder)
+            state.setMapViewHolder(controller.typedHolder)
 
             let markerController = MapKitMarkerController(mapView: mapView) { [weak self] id in
                 // Info bubble position update callback
@@ -268,6 +206,17 @@ private struct MapKitMapViewRepresentable: UIViewRepresentable {
             let groundImageController = MapKitGroundImageController(mapView: mapView)
             self.groundImageController = groundImageController
 
+            // Route the simple overlays through the shared collector so each
+            // controller subscribes to one source of truth instead of the map
+            // host re-diffing arrays every render.
+            let overlayScope = MapOverlayScope()
+            self.overlayScope = overlayScope
+            bindOverlayCollector(overlayScope.circleCollector, to: circleController)
+            bindOverlayCollector(overlayScope.polylineCollector, to: polylineController)
+            bindOverlayCollector(overlayScope.polygonCollector, to: polygonController)
+            bindOverlayCollector(overlayScope.rasterLayerCollector, to: rasterLayerController)
+            bindOverlayCollector(overlayScope.groundImageCollector, to: groundImageController)
+
             // Observe camera changes to detect tilt and bearing updates
             // This captures changes that regionDidChange might miss
             cameraObserver = mapView.observe(\.camera, options: [.old, .new]) { [weak self] observedMapView, change in
@@ -314,6 +263,8 @@ private struct MapKitMapViewRepresentable: UIViewRepresentable {
             rasterLayerController = nil
             groundImageController?.unbind()
             groundImageController = nil
+            overlayScope?.clear()
+            overlayScope = nil
             markerIcons.removeAll()
             markerStates.removeAll()
 
@@ -347,17 +298,17 @@ private struct MapKitMapViewRepresentable: UIViewRepresentable {
                     }
                 )
             }
-            circleController?.syncCircles(content.circles)
-            polylineController?.syncPolylines(content.polylines)
-            polygonController?.syncPolygons(content.polygons)
+            overlayScope?.circleCollector.sync(content.circles.map { $0.state })
+            overlayScope?.polylineCollector.sync(content.polylines.map { $0.state })
+            overlayScope?.polygonCollector.sync(content.polygons.map { $0.state })
             for handler in content.polygonSyncHandlers {
                 let hullController = hullPolygonController
                 handler.bindPolygonSync { [weak hullController] states in
                     await hullController?.add(data: states)
                 }
             }
-            rasterLayerController?.syncRasterLayers(content.rasterLayers)
-            groundImageController?.syncGroundImages(content.groundImages)
+            overlayScope?.rasterLayerCollector.sync(content.rasterLayers.map { $0.state })
+            overlayScope?.groundImageCollector.sync(content.groundImages.map { $0.state })
         }
 
         // MARK: - MKMapViewDelegate
@@ -398,8 +349,7 @@ private struct MapKitMapViewRepresentable: UIViewRepresentable {
             updateInfoBubbleLayouts()
             isRegionChanging = false
 
-            if !didCallMapLoaded {
-                didCallMapLoaded = true
+            performMapLoadedOnce {
                 controller?.notifyMapInitialized()
                 onMapLoaded?(state)
             }
@@ -693,15 +643,6 @@ private struct MapKitMapViewRepresentable: UIViewRepresentable {
             guard !mapView.bounds.isEmpty else { return nil }
             let coordinate = mapView.convert(point, toCoordinateFrom: mapView)
             return GeoPoint(latitude: coordinate.latitude, longitude: coordinate.longitude, altitude: 0)
-        }
-
-        fileprivate func attachInfoBubbleContainer(to mapView: MKMapView) {
-            guard infoBubbleContainer.superview !== mapView else { return }
-            infoBubbleContainer.backgroundColor = .clear
-            infoBubbleContainer.isUserInteractionEnabled = true  // Enable interaction for InfoBubble buttons
-            infoBubbleContainer.frame = mapView.bounds
-            infoBubbleContainer.autoresizingMask = [.flexibleWidth, .flexibleHeight]
-            mapView.addSubview(infoBubbleContainer)
         }
 
         fileprivate func updateInfoBubbleLayouts() {

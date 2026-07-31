@@ -7,6 +7,7 @@ import UIKit
 
 final class MapKitViewController: MapViewControllerProtocol {
     let holder: AnyMapViewHolder
+    let typedHolder: MapKitViewHolder
     let coroutine = CoroutineScope()
     private weak var mapView: MKMapView?
     private(set) var lastLogicalTilt: Double?
@@ -28,7 +29,9 @@ final class MapKitViewController: MapViewControllerProtocol {
 
     init(mapView: MKMapView) {
         self.mapView = mapView
-        self.holder = AnyMapViewHolder(MapKitViewHolder(mapView: mapView))
+        let typedHolder = MapKitViewHolder(mapView: mapView)
+        self.typedHolder = typedHolder
+        self.holder = AnyMapViewHolder(typedHolder)
     }
 
     deinit {
