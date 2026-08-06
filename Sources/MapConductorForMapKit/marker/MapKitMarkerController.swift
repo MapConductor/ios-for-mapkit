@@ -196,7 +196,6 @@ final class MapKitMarkerController: AbstractMarkerController<MKPointAnnotation, 
     func handleTiledMarkerTap(at screenPoint: CGPoint) -> Bool {
         MCLog.marker("MapKitMarkerController.handleTiledMarkerTap point=\(screenPoint) tiledCount=\(tiledMarkerIds.count)")
         guard !tiledMarkerIds.isEmpty, let mapView else { return false }
-        let clickRadiusPt: CGFloat = 44
         var bestState: MarkerState? = nil
         var bestDist = CGFloat.infinity
 
@@ -207,8 +206,17 @@ final class MapKitMarkerController: AbstractMarkerController<MKPointAnnotation, 
                 longitude: entity.state.position.longitude
             )
             let markerPoint = mapView.convert(coord, toPointTo: mapView)
+            // アイコン矩形 + tapTolerance で判定する（android の `find()` と同じ）。
+            // 以前は 44pt の固定半径で、アイコンの大きさを一切見ていなかったため、
+            // 大きいアイコンは端をタップしても反応せず、小さいアイコンは離れていても反応していた。
+            guard MarkerHitTest.hitsIcon(
+                touchScreen: screenPoint,
+                markerScreen: markerPoint,
+                state: entity.state
+            ) else { continue }
+            // 重なったマーカー同士は、アンカーがタップに近い方を優先する。
             let dist = hypot(screenPoint.x - markerPoint.x, screenPoint.y - markerPoint.y)
-            if dist < clickRadiusPt && dist < bestDist {
+            if dist < bestDist {
                 bestDist = dist
                 bestState = entity.state
             }

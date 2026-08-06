@@ -23,6 +23,27 @@ final class MapKitViewController: MapViewControllerProtocol {
     private var cameraMoveStartListener: OnCameraMoveHandler?
     private var cameraMoveListener: OnCameraMoveHandler?
     private var cameraMoveEndListener: OnCameraMoveHandler?
+
+    /// MapKit はネイティブのカメラ範囲制限 API を（統一ズームの体系で）持たないため、
+    /// android-sdk の HERE/ArcGIS/TomTom と同じくカメラ停止時に矩形内へクランプして
+    /// 再適用する方式で制限する。
+    private let cameraRestrictionClamp = CameraRestrictionClamp()
+
+    func setCameraRestriction(_ restriction: CameraRestriction?) {
+        cameraRestrictionClamp.set(restriction)
+    }
+
+    /// カメラ停止時に制限違反を補正する。補正したら `true`。
+    ///
+    /// android-sdk は `cameraRestrictionCorrection` が効いた場合 `cameraMoveEndCallback` を
+    /// 呼ばずに return するため、アプリ側は範囲外のカメラを一度も観測しない。iOS では
+    /// カメラ停止の通知経路がコーディネータ側にもあるので、コーディネータがまずこれを呼び、
+    /// `true` なら state 更新・リスナー通知をまとめてスキップする。
+    func applyCameraRestrictionCorrectionIfNeeded(_ current: MapCameraPosition) -> Bool {
+        guard let corrected = cameraRestrictionClamp.correction(for: current) else { return false }
+        moveCamera(position: corrected)
+        return true
+    }
     private var mapClickListener: OnMapEventHandler?
     private var mapLongClickListener: OnMapEventHandler?
     private var mapInitializedListener: OnMapInitializedHandler?

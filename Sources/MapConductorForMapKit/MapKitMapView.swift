@@ -8,10 +8,12 @@ import UIKit
 public struct MapKitMapView: View {
     @ObservedObject private var state: MapKitViewState
     private let handlers: MapViewHandlers<MapKitViewState>
+    private let cameraRestriction: CameraRestriction?
     private let content: () -> MapViewContent
 
     public init(
         state: MapKitViewState,
+        cameraRestriction: CameraRestriction? = nil,
         onMapLoaded: OnMapLoadedHandler<MapKitViewState>? = nil,
         onMapClick: OnMapEventHandler? = nil,
         onMapLongClick: OnMapEventHandler? = nil,
@@ -22,6 +24,7 @@ public struct MapKitMapView: View {
         @MapViewContentBuilder content: @escaping () -> MapViewContent = { MapViewContent() }
     ) {
         self.state = state
+        self.cameraRestriction = cameraRestriction
         self.handlers = MapViewHandlers(
             onMapLoaded: onMapLoaded,
             onMapClick: onMapClick,
@@ -35,7 +38,13 @@ public struct MapKitMapView: View {
     }
 
     public var body: some View {
-        let mapContent = content()
+        // The provider's registry is in scope only while content is being assembled —
+        // the same window in which Compose provides `LocalMapServiceRegistry` around the
+        // content lambda. Bracketing the pass lets a removed plugin be noticed.
+        let support = state.serviceRegistry.get(MarkerRenderingSupportKey.self)
+        support?.beginContentPass()
+        let mapContent = MapServiceRegistryScope.with(state.serviceRegistry) { content() }
+        support?.endContentPass()
         return MapViewBase(
             attributionRules: state.mapDesignType.attributionRules,
             camera: state.cameraPosition,
@@ -43,6 +52,7 @@ public struct MapKitMapView: View {
         ) {
             MapKitMapViewRepresentable(
                 state: state,
+                cameraRestriction: cameraRestriction,
                 handlers: handlers,
                 content: mapContent
             )
@@ -52,6 +62,7 @@ public struct MapKitMapView: View {
 
 private struct MapKitMapViewRepresentable: UIViewRepresentable {
     @ObservedObject var state: MapKitViewState
+    let cameraRestriction: CameraRestriction?
     let handlers: MapViewHandlers<MapKitViewState>
     let content: MapViewContent
 
@@ -67,6 +78,9 @@ private struct MapKitMapViewRepresentable: UIViewRepresentable {
         let mapView = MKMapView(frame: .zero)
         mapView.mapType = state.mapDesignType.getValue()
         mapView.isScrollEnabled = state.uiSettings.scrollGesture
+        mapView.isZoomEnabled = state.uiSettings.zoomGesture
+        mapView.isRotateEnabled = state.uiSettings.rotateGesture
+        mapView.isPitchEnabled = state.uiSettings.tiltGesture
         mapView.delegate = context.coordinator
 
         // Use the extension method to properly set camera with tilt and bearing
@@ -87,6 +101,7 @@ private struct MapKitMapViewRepresentable: UIViewRepresentable {
         context.coordinator.attachInfoBubbleContainer(to: mapView)
         context.coordinator.mapView = mapView
         context.coordinator.bind(state: state, mapView: mapView)
+        context.coordinator.applyCameraRestriction(cameraRestriction)
         MCLog.map("MapKitMapView.makeUIView updateContent markers=\(content.markers.count) bubbles=\(content.infoBubbles.count)")
         context.coordinator.updateContent(content)
         context.coordinator.updateInfoBubbleLayouts()
@@ -94,8 +109,13 @@ private struct MapKitMapViewRepresentable: UIViewRepresentable {
     }
 
     func updateUIView(_ uiView: MKMapView, context: Context) {
+        // 制限値が変わったときだけ再適用する。
+        context.coordinator.applyCameraRestriction(cameraRestriction)
         uiView.mapType = state.mapDesignType.getValue()
         uiView.isScrollEnabled = state.uiSettings.scrollGesture
+        uiView.isZoomEnabled = state.uiSettings.zoomGesture
+        uiView.isRotateEnabled = state.uiSettings.rotateGesture
+        uiView.isPitchEnabled = state.uiSettings.tiltGesture
         MCLog.map("MapKitMapView.updateUIView updateContent markers=\(content.markers.count) bubbles=\(content.infoBubbles.count)")
         context.coordinator.updateContent(content)
         context.coordinator.updateInfoBubbleLayouts()
@@ -116,6 +136,11 @@ private struct MapKitMapViewRepresentable: UIViewRepresentable {
     final class Coordinator: MapViewCoordinatorBase<MapKitViewState>, MKMapViewDelegate {
         weak var mapView: MKMapView?
         private var controller: MapKitViewController?
+
+        /// android-sdk の `cameraRestriction?.let { controller.setCameraRestriction(it) }` 相当。
+        func applyCameraRestriction(_ restriction: CameraRestriction?) {
+            applyCameraRestriction(restriction, to: controller)
+        }
         private var markerController: MapKitMarkerController?
         private var infoBubbleCoordinator: InfoBubbleOverlayCoordinator?
         private var circleController: MapKitCircleController?
@@ -146,11 +171,29 @@ private struct MapKitMapViewRepresentable: UIViewRepresentable {
             makeRenderer: { [weak self] strategy in
                 guard let mapView = self?.mapView else { fatalError("mapView unavailable") }
                 return MapKitMarkerRenderer(mapView: mapView, markerManager: strategy.markerManager)
+            },
+            currentCamera: { [weak self] in
+                guard let self, let mapView = self.mapView else { return nil }
+                return self.currentCameraPosition(from: mapView)
             }
         )
         private var strategyMarkerIcons: [String: BitmapIcon] = [:]
 
         func bind(state: MapKitViewState, mapView: MKMapView) {
+            // Publish marker rendering as a map-scoped capability. Add-on modules resolve it
+            // from the registry; this provider never learns that clustering exists.
+            strategyManager.onMarkersChanged = { [weak self] markers in
+                self?.strategyMarkerIcons = Dictionary(
+                    uniqueKeysWithValues: markers.map {
+                        ($0.id, ($0.icon ?? DefaultMarkerIcon()).toBitmapIcon())
+                    }
+                )
+            }
+            // 再バインド時に前回の capability が残らないよう、登録前に空にする
+            // （android-sdk の各 *MapView.kt が `registry.clear()` してから put するのと同じ）。
+            state.serviceRegistry.clear()
+            state.serviceRegistry.put(MarkerRenderingSupportKey.self, strategyManager)
+
             let controller = MapKitViewController(mapView: mapView)
             self.controller = controller
             state.setController(controller)
@@ -290,14 +333,6 @@ private struct MapKitMapViewRepresentable: UIViewRepresentable {
 
             markerController?.tilingOptions = content.markerTilingOptions
             markerController?.syncMarkers(content.markers)
-            if let mapView {
-                strategyManager.update(content: content, initialCamera: currentCameraPosition(from: mapView))
-                strategyMarkerIcons = Dictionary(
-                    uniqueKeysWithValues: content.markerRenderingMarkers.map {
-                        ($0.id, ($0.icon ?? DefaultMarkerIcon()).toBitmapIcon())
-                    }
-                )
-            }
             overlayScope?.circleCollector.sync(content.circles.map { $0.state })
             overlayScope?.polylineCollector.sync(content.polylines.map { $0.state })
             overlayScope?.polygonCollector.sync(content.polygons.map { $0.state })
@@ -338,6 +373,11 @@ private struct MapKitMapViewRepresentable: UIViewRepresentable {
 
         func mapView(_ mapView: MKMapView, regionDidChangeAnimated animated: Bool) {
             let camera = currentCameraPosition(from: mapView)
+            // 範囲・ズーム制限に違反していれば矩形内へ引き戻す。再適用すると
+            // regionDidChange が再発火し、そこでは補正不要になり通常フローへ進む。
+            // android-sdk と同じく、補正した回は state 更新もコールバックも行わないので、
+            // アプリ側が範囲外のカメラを観測することはない。
+            if controller?.applyCameraRestrictionCorrectionIfNeeded(camera) == true { return }
             state.updateCameraPosition(camera)
             polylineController?.setCurrentCameraPosition(camera)
             controller?.notifyCameraMoveEnd(camera)

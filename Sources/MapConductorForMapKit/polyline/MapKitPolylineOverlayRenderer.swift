@@ -15,8 +15,8 @@ final class MapKitPolylineOverlayRenderer: AbstractPolylineOverlayRenderer<MKPol
     override func createPolyline(state: PolylineState) async -> MKPolyline? {
         guard let mapView else { return nil }
         let geoPoints: [GeoPointProtocol] = state.geodesic
-            ? createInterpolatePoints(state.points, maxSegmentLength: 1000.0)
-            : createLinearInterpolatePoints(state.points)
+            ? WGS84Geodesic.createInterpolatePoints(state.points, maxSegmentLength: 1000.0)
+            : Planar.createInterpolatePoints(state.points)
 
         var coordinates = geoPoints.map { CLLocationCoordinate2D(latitude: $0.latitude, longitude: $0.longitude) }
         let polyline = MKPolyline(coordinates: &coordinates, count: coordinates.count)
