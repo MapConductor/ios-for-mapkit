@@ -140,14 +140,14 @@ final class MapKitRasterLayerOverlayRenderer: AbstractRasterLayerOverlayRenderer
         }
     }
 
-    private func resolveSource(state: RasterLayerState) async -> RasterSource {
+    private func resolveSource(state: RasterLayerState) async -> RasterLayerSource {
         switch state.source {
         case .urlTemplate:
             return state.source
         case let .arcGisService(serviceUrl):
             let base = serviceUrl.trimmingCharacters(in: CharacterSet.whitespacesAndNewlines).trimmingCharacters(in: CharacterSet(charactersIn: "/"))
             let template = "\(base)/tile/{z}/{y}/{x}"
-            return .urlTemplate(template: template, tileSize: RasterSource.defaultTileSize, scheme: .XYZ)
+            return .urlTemplate(template: template, tileSize: RasterLayerSource.defaultTileSize, scheme: .XYZ)
         case let .tileJson(url):
             guard let configUrl = URL(string: url) else {
                 NSLog("[MapConductor] MapKit RasterLayer: invalid tileJson url=%@", url)
@@ -161,7 +161,7 @@ final class MapKitRasterLayerOverlayRenderer: AbstractRasterLayerOverlayRenderer
                 }
                 let scheme: TileScheme =
                     (tileJson.scheme?.lowercased() == "tms") ? .TMS : .XYZ
-                let tileSize = tileJson.tileSize ?? RasterSource.defaultTileSize
+                let tileSize = tileJson.tileSize ?? RasterLayerSource.defaultTileSize
                 return .urlTemplate(
                     template: template,
                     tileSize: tileSize,
