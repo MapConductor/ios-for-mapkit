@@ -78,11 +78,8 @@ final public class MapKitViewState : MapConductorCore.MapViewState<MapConductorF
   override final public func getMapViewHolder() -> MapConductorCore.AnyMapViewHolder?
   @objc deinit
 }
-public class MapKitZoomAltitudeConverter : MapConductorCore.ZoomAltitudeConverterProtocol {
-  final public let zoom0Altitude: Swift.Double
-  public init(zoom0Altitude: Swift.Double = 171_319_879.0)
-  public func zoomLevelToAltitude(zoomLevel: Swift.Double, latitude: Swift.Double, tilt: Swift.Double) -> Swift.Double
-  public func altitudeToZoomLevel(altitude: Swift.Double, latitude: Swift.Double, tilt: Swift.Double) -> Swift.Double
+public class MapKitZoomAltitudeConverter : MapConductorCore.WebMercatorZoomAltitudeConverter {
+  public init(zoom0Altitude: Swift.Double = AbstractZoomAltitudeConverter.defaultZoom0Altitude)
   @objc deinit
 }
 @_hasMissingDesignatedInitializers final public class MapKitViewHolder : MapConductorCore.MapViewHolderProtocol {
