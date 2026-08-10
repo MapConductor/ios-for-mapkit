@@ -73,7 +73,6 @@ public class MapKitZoomAltitudeConverter : MapConductorCore.WebMercatorZoomAltit
   final public let mapView: MapKit.MKMapView
   final public let map: MapKit.MKMapView
   final public func toScreenOffset(position: any MapConductorCore.GeoPointProtocol) -> CoreFoundation.CGPoint?
-  final public func fromScreenOffset(offset: CoreFoundation.CGPoint) async -> MapConductorCore.GeoPoint?
   final public func fromScreenOffsetSync(offset: CoreFoundation.CGPoint) -> MapConductorCore.GeoPoint?
   public typealias ActualMap = MapKit.MKMapView
   public typealias ActualMapView = MapKit.MKMapView
