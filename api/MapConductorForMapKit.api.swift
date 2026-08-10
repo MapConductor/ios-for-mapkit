@@ -56,25 +56,12 @@ final public class MapKitViewState : MapConductorCore.MapViewState<MapConductorF
   final public var mapViewHolder: MapConductorForMapKit.MapKitViewHolder? {
     get
   }
-  override final public var id: Swift.String {
-    get
-  }
-  override final public var cameraPosition: MapConductorCore.MapCameraPosition {
-    get
-  }
   override final public var mapDesignType: MapConductorForMapKit.MapKitMapDesignType {
-    get
-    set
-  }
-  override final public var uiSettings: MapConductorCore.MapUISettings {
     get
     set
   }
   public init(id: Swift.String, mapDesignType: MapConductorForMapKit.MapKitMapDesignType = MapKitMapDesign.Standard, cameraPosition: MapConductorCore.MapCameraPosition = .Default, uiSettings: MapConductorCore.MapUISettings = MapUISettings())
   convenience public init(mapDesignType: MapConductorForMapKit.MapKitMapDesignType = MapKitMapDesign.Standard, cameraPosition: MapConductorCore.MapCameraPosition = .Default, uiSettings: MapConductorCore.MapUISettings = MapUISettings())
-  override final public func moveCameraTo(cameraPosition: MapConductorCore.MapCameraPosition, durationMillis: MapConductorCore.Long? = 0)
-  override final public func fitBounds(bounds: MapConductorCore.GeoRectBounds, padding: Swift.Int)
-  override final public func moveCameraTo(position: MapConductorCore.GeoPoint, durationMillis: MapConductorCore.Long? = 0)
   override final public func getMapViewHolder() -> MapConductorCore.AnyMapViewHolder?
   @objc deinit
 }
