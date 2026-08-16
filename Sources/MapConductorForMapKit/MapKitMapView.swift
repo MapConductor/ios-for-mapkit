@@ -218,6 +218,7 @@ private struct MapKitMapViewRepresentable: UIViewRepresentable {
                     let coordinate = CLLocationCoordinate2D(latitude: point.latitude, longitude: point.longitude)
                     return mapView.convert(coordinate, toPointTo: mapView)
                 },
+                projectionGate: screenProjectionGate(feature: "InfoBubble"),
                 resolveMarkerStateForIcon: { [weak markerController] id, bubbleMarker in
                     markerController?.getMarkerState(for: id) ?? bubbleMarker
                 },
@@ -236,7 +237,8 @@ private struct MapKitMapViewRepresentable: UIViewRepresentable {
                     let coordinate = CLLocationCoordinate2D(latitude: point.latitude, longitude: point.longitude)
                     let p = mapView.convert(coordinate, toPointTo: mapView)
                     return (p.x.isFinite && p.y.isFinite) ? p : nil
-                }
+                },
+                projectionGate: screenProjectionGate(feature: "marker animation overlay")
             )
 
             let circleController = MapKitCircleController(mapView: mapView)
@@ -258,6 +260,15 @@ private struct MapKitMapViewRepresentable: UIViewRepresentable {
             // Route the simple overlays through the shared collector so each
             // controller subscribes to one source of truth instead of the map
             // host re-diffing arrays every render.
+            // クリックカスケードとスロット解決がここから kind で引く。
+            // **登録を忘れるとタップに反応しなくなる。**
+            controller.registerOverlayController(markerController)
+            controller.registerOverlayController(circleController)
+            controller.registerOverlayController(polylineController)
+            controller.registerOverlayController(polygonController)
+            controller.registerOverlayController(groundImageController)
+            controller.registerOverlayController(rasterLayerController)
+
             let overlayScope = MapOverlayScope()
             self.overlayScope = overlayScope
             bindOverlayCollector(overlayScope.circleCollector, to: circleController)
@@ -428,10 +439,11 @@ private struct MapKitMapViewRepresentable: UIViewRepresentable {
             if markerController?.handleTiledMarkerTap(at: point) == true { return }
 
             // Hit-test overlays first (MapKit doesn't provide built-in overlay tap callbacks).
-            if groundImageController?.handleTap(at: coordinate) == true { return }
-            if circleController?.handleTap(at: coordinate) == true { return }
-            if polylineController?.handleTap(at: coordinate) == true { return }
-            if polygonController?.handleTap(at: coordinate) == true { return }
+            // circle → groundImage → polyline → polygon の一本道。
+            // 順序と先勝ちはコアの dispatchOverlayTap が持つ。
+            // 移行前はここで groundImage → circle → polyline → polygon の独自順だった。
+            let tapped = GeoPoint(latitude: coordinate.latitude, longitude: coordinate.longitude, altitude: 0)
+            if controller?.dispatchOverlayTap(position: tapped) == true { return }
 
             let geoPoint = GeoPoint(latitude: coordinate.latitude, longitude: coordinate.longitude, altitude: 0)
             controller?.notifyMapClick(geoPoint)
