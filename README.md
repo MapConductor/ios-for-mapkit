@@ -10,6 +10,12 @@ Even using the wrapper API, you can still access the native MapKit view if you w
 
 https://mapconductor.com/setup/ios/mapkit/
 
+### API key
+
+**No API key.** MapKit is Apple's own framework and authenticates through your
+app's provisioning. (MapKit **JS**, used by the web SDK, does need a token — that
+is a different product.)
+
 ## Usage
 
 ```swift
