@@ -1,6 +1,6 @@
 import Foundation
 import MapKit
-import MapConductorCore
+@_spi(MapConductorDriver) import MapConductorCore
 
 private let converter = MapKitZoomAltitudeConverter(zoom0Altitude: 171_319_879.0)
 private let mapKitMaxPitch: Double = 80.9
@@ -30,7 +30,7 @@ public extension MapCameraPosition {
             ? Spherical.computeOffset(
                 origin: position,
                 distance: distance * tan(pitchRadians),
-                heading: bearing
+                heading: CameraBearing.toNativeHeading(bearing)
             )
             : position
 
@@ -42,7 +42,7 @@ public extension MapCameraPosition {
             ),
             fromDistance: distance,
             pitch: nativePitch,
-            heading: bearing
+            heading: CameraBearing.toNativeHeading(bearing)
         )
     }
 }
@@ -95,7 +95,7 @@ public extension MKMapView {
         return MapCameraPosition(
             position: position,
             zoom: zoom,
-            bearing: camera.heading,
+            bearing: CameraBearing.bearingFromNativeHeading(camera.heading),
             tilt: logicalTilt,
             visibleRegion: visibleRegion
         )

@@ -1,7 +1,7 @@
 import Foundation
 import CoreLocation
 import MapKit
-import MapConductorCore
+@_spi(MapConductorDriver) import MapConductorCore
 import QuartzCore
 import UIKit
 
@@ -228,12 +228,12 @@ final class MapKitViewController: MapViewControllerProtocol {
             // Use UIView.animate to respect the specified duration
             UIView.animate(withDuration: duration) {
                 mapView.setVisibleMapRect(rect, edgePadding: .zero, animated: false)
-                Self.applyHeading(position.bearing, center: centerCoordinate, to: mapView, animated: false)
+                Self.applyHeading(CameraBearing.toNativeHeading(position.bearing), center: centerCoordinate, to: mapView, animated: false)
             }
         } else {
             // Use MapKit's default animation or no animation
             mapView.setVisibleMapRect(rect, edgePadding: .zero, animated: animated)
-            Self.applyHeading(position.bearing, center: centerCoordinate, to: mapView, animated: animated)
+            Self.applyHeading(CameraBearing.toNativeHeading(position.bearing), center: centerCoordinate, to: mapView, animated: animated)
         }
 
         return true
