@@ -54,7 +54,11 @@ public extension MKMapView {
         visibleRegion: VisibleRegion? = nil
     ) -> MapCameraPosition {
         let cameraAltitude = camera.altitude
-        let pitchRadians = camera.pitch * .pi / 180.0
+        // `MKMapCamera.pitch` は CGFloat。CGFloat と Double の暗黙変換に任せると
+        // CoreGraphics の `cos(CGFloat)` と Foundation の `cos(Double)` が両方候補になり、
+        // ツールチェーンによっては `ambiguous use of 'cos'` で落ちる（CI の macos-15 で踏んだ）。
+        // 手元の Xcode では通ってしまうので、Double へ明示的に寄せておく。
+        let pitchRadians = Double(camera.pitch) * .pi / 180.0
         // Recover the slant distance set via MKMapCamera(fromDistance:) — the inverse of toMKMapCamera().
         let slantDistance = cameraAltitude / max(cos(pitchRadians), minCosTilt)
         var position = GeoPoint(
@@ -154,7 +158,11 @@ private extension MKMapView {
     /// from whatever camera happens to be set and reused to place the next one.
     func metersPerPointPerDistance() -> Double? {
         guard let metersPerPoint = measuredMetersPerPointAtCenter() else { return nil }
-        let pitchRadians = camera.pitch * .pi / 180.0
+        // `MKMapCamera.pitch` は CGFloat。CGFloat と Double の暗黙変換に任せると
+        // CoreGraphics の `cos(CGFloat)` と Foundation の `cos(Double)` が両方候補になり、
+        // ツールチェーンによっては `ambiguous use of 'cos'` で落ちる（CI の macos-15 で踏んだ）。
+        // 手元の Xcode では通ってしまうので、Double へ明示的に寄せておく。
+        let pitchRadians = Double(camera.pitch) * .pi / 180.0
         let slantDistance = camera.altitude / max(cos(pitchRadians), minCosTilt)
         guard slantDistance > 0 else { return nil }
         let factor = metersPerPoint / slantDistance
