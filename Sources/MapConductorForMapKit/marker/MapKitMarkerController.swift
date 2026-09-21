@@ -1,7 +1,7 @@
 import Combine
 import CoreLocation
 import MapKit
-import MapConductorCore
+@_spi(MapConductorDriver) import MapConductorCore
 
 @MainActor
 final class MapKitMarkerController: AbstractMarkerController<MKPointAnnotation, MapKitMarkerRenderer> {
@@ -21,8 +21,18 @@ final class MapKitMarkerController: AbstractMarkerController<MKPointAnnotation, 
         super.init(markerManager: markerManager, renderer: renderer)
     }
 
+    /// 同一一覧の再送を見抜く門番。詳細は型のコメントに。
+    private var syncIdentity = MarkerListIdentity()
+
     func syncMarkers(_ markers: [Marker]) {
         MCLog.marker("MapKitMarkerController.syncMarkers count=\(markers.count)")
+        // 同じ一覧の再送は入口で帰す。SwiftUI はカメラが動くたびに body を
+        // 再評価し、そのたびに全マーカーがここへ来る。なぜそれが実害か
+        // （144k 件で操作の 89% が凍った）は core の MarkerListIdentity に。
+        guard syncIdentity.shouldProcess(markers) else {
+            refreshTileLayerIfNeeded()
+            return
+        }
         let newIds = Set(markers.map { $0.id })
         let oldIds = Set(markerStatesById.keys)
 
@@ -73,7 +83,6 @@ final class MapKitMarkerController: AbstractMarkerController<MKPointAnnotation, 
 
     private func subscribeToMarker(_ state: MarkerState) {
         guard markerSubscriptions[state.id] == nil else { return }
-        MCLog.marker("MapKitMarkerController.subscribe id=\(state.id)")
         markerSubscriptions[state.id] = state.asFlow()
             .dropFirst() // Skip initial value to avoid triggering update on subscription
             .receive(on: DispatchQueue.main)
@@ -128,7 +137,11 @@ final class MapKitMarkerController: AbstractMarkerController<MKPointAnnotation, 
             tileSize: Self.retinaAwareTileSize,
             cacheSizeBytes: tilingOptions.cacheSize,
             debugTileOverlay: tilingOptions.debugTileOverlay,
-            iconScaleCallback: scaledCallback
+            iconScaleCallback: scaledCallback,
+            // MapLibre と同じく tilingOptions から。渡し忘れると 14px の間引きが
+            // 黙って無効になり、密なデータで描画も突き合わせも重くなる（実際に
+            // ここが 0 のままだった）。
+            declutterPx: tilingOptions.declutterPx
         )
         TileServerRegistry.get().register(routeId: routeId, provider: renderer)
         tileRenderer = renderer
