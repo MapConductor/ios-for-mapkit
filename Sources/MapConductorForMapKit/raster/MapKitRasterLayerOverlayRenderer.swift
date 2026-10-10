@@ -14,7 +14,7 @@ final class MapKitRasterLayerOverlayRenderer: AbstractRasterLayerOverlayRenderer
 
     override func createLayer(state: RasterLayerState) async -> MKTileOverlay? {
         guard let mapView else { return nil }
-        guard let overlay = await makeTileOverlay(from: state) else { return nil }
+        guard let overlay = await makeTileOverlay(from: state, displayScale: mapView.traitCollection.displayScale) else { return nil }
         overlayStates[overlay] = state
 
         let renderer = MKTileOverlayRenderer(tileOverlay: overlay)
@@ -97,14 +97,18 @@ final class MapKitRasterLayerOverlayRenderer: AbstractRasterLayerOverlayRenderer
         mapView = nil
     }
 
-    private func makeTileOverlay(from state: RasterLayerState) async -> MKTileOverlay? {
+    private func makeTileOverlay(from state: RasterLayerState, displayScale: CGFloat) async -> MKTileOverlay? {
         let source = await resolveSource(state: state)
 
         switch source {
         case let .urlTemplate(template, tileSize, minZoom, maxZoom, _, scheme):
+            // RasterLayerSource expresses display size in points; MKTileOverlay
+            // expects pixels. Without the screen scale, Retina maps select a
+            // finer tile level and shrink the style's labels and road widths.
+            let pixelSize = max(1, Int((CGFloat(tileSize) * max(1, displayScale)).rounded()))
             let overlay = CustomURLTileOverlay(
                 urlTemplate: template,
-                tileSize: tileSize,
+                tileSize: pixelSize,
                 minZoom: minZoom,
                 maxZoom: maxZoom,
                 scheme: scheme,
