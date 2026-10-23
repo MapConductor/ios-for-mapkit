@@ -1,7 +1,7 @@
 import Combine
 import CoreLocation
 import MapKit
-import MapConductorCore
+@_spi(MapConductorDriver) import MapConductorCore
 
 @MainActor
 final class MapKitMarkerController: AbstractMarkerController<MKPointAnnotation, MapKitMarkerRenderer> {
@@ -196,34 +196,23 @@ final class MapKitMarkerController: AbstractMarkerController<MKPointAnnotation, 
     func handleTiledMarkerTap(at screenPoint: CGPoint) -> Bool {
         MCLog.marker("MapKitMarkerController.handleTiledMarkerTap point=\(screenPoint) tiledCount=\(tiledMarkerIds.count)")
         guard !tiledMarkerIds.isEmpty, let mapView else { return false }
-        var bestState: MarkerState? = nil
-        var bestDist = CGFloat.infinity
-
-        for id in tiledMarkerIds {
-            guard let entity = markerManager.getEntity(id), entity.state.clickable else { continue }
-            let coord = CLLocationCoordinate2D(
-                latitude: entity.state.position.latitude,
-                longitude: entity.state.position.longitude
-            )
-            let markerPoint = mapView.convert(coord, toPointTo: mapView)
-            // アイコン矩形 + tapTolerance で判定する（android の `find()` と同じ）。
-            // 以前は 44pt の固定半径で、アイコンの大きさを一切見ていなかったため、
-            // 大きいアイコンは端をタップしても反応せず、小さいアイコンは離れていても反応していた。
-            guard MarkerHitTest.hitsIcon(
-                touchScreen: screenPoint,
-                markerScreen: markerPoint,
-                state: entity.state
-            ) else { continue }
-            // 重なったマーカー同士は、アンカーがタップに近い方を優先する。
-            let dist = hypot(screenPoint.x - markerPoint.x, screenPoint.y - markerPoint.y)
-            if dist < bestDist {
-                bestDist = dist
-                bestState = entity.state
+        // 選び方はコアの MarkerHitTest.pick と同じ。指の下にアイコン（ラベル込み）が描かれている
+        // マーカーを、アンカーの近い別のマーカーより優先する。
+        let candidates = tiledMarkerIds.compactMap { markerManager.getEntity($0)?.state }.filter(\.clickable)
+        let bestState = MarkerHitTest.pick(
+            touchScreen: screenPoint,
+            candidates: candidates,
+            state: { $0 },
+            project: {
+                mapView.convert(
+                    CLLocationCoordinate2D(latitude: $0.latitude, longitude: $0.longitude),
+                    toPointTo: mapView
+                )
             }
-        }
+        )
 
         if let state = bestState {
-            MCLog.marker("MapKitMarkerController.handleTiledMarkerTap hit id=\(state.id) dist=\(bestDist)")
+            MCLog.marker("MapKitMarkerController.handleTiledMarkerTap hit id=\(state.id)")
             dispatchClick(state: state)
             return true
         }
