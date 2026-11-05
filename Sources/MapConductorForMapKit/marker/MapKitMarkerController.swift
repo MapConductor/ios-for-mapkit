@@ -116,6 +116,9 @@ final class MapKitMarkerController: AbstractMarkerController<MKPointAnnotation, 
     private var tileRenderer: MarkerTileRenderer<MKPointAnnotation>?
     private var tileRouteId: String?
     private var tiledMarkerIds: Set<String> = []
+    /// タイル URL の版。マーカーが変わるたびに上げ、地図に描画済みのタイルを取り直させる。
+    private var tileVersion: Int64 = 0
+    private var tileRefreshScheduled = false
     private var tileOverlay: MKTileOverlay?
     private var lastServerBaseUrl: String = ""
     private let defaultMarkerIconForTiling: BitmapIcon = DefaultMarkerIcon().toBitmapIcon()
@@ -148,6 +151,32 @@ final class MapKitMarkerController: AbstractMarkerController<MKPointAnnotation, 
         tileRouteId = routeId
     }
 
+    /// タイル担当のマーカーが変わったら、タイルを描き直させる。
+    ///
+    /// タイル担当のマーカーはネイティブのマーカーを持たないので、基底の `update` は
+    /// 管理表を書き換えるだけで地図には何も届かない。アイコンや位置をその場で
+    /// 書き換えても、描画済みのタイルは古い絵のまま残っていた。
+    override func update(state: MarkerState) async {
+        await super.update(state: state)
+        guard tiledMarkerIds.contains(state.id) else { return }
+        scheduleTileRefresh()
+    }
+
+    /// 描き直しは 1 回にまとめる。ラベルの付け替えのように数百本が続けて変わると、
+    /// 1 本ごとに層を作り直して、そのたびに地図が全タイルを取り直す。
+    private func scheduleTileRefresh() {
+        guard !tileRefreshScheduled else { return }
+        tileRefreshScheduled = true
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            self.tileRefreshScheduled = false
+            guard let tileRenderer = self.tileRenderer else { return }
+            tileRenderer.invalidate()
+            self.tileVersion += 1
+            self.updateTileOverlay(hasTiledMarkers: !self.tiledMarkerIds.isEmpty)
+        }
+    }
+
     override func add(data: [MarkerState]) async {
         guard tilingOptions.enabled else {
             MCLog.marker("MapKitMarkerController.add tilingDisabled count=\(data.count)")
@@ -173,6 +202,7 @@ final class MapKitMarkerController: AbstractMarkerController<MKPointAnnotation, 
 
         if result.tiledDataChanged, let tileRenderer {
             tileRenderer.invalidate()
+            tileVersion += 1
             updateTileOverlay(hasTiledMarkers: result.hasTiledMarkers)
         }
     }
@@ -196,7 +226,12 @@ final class MapKitMarkerController: AbstractMarkerController<MKPointAnnotation, 
 
         let server = TileServerRegistry.get()
         lastServerBaseUrl = server.baseUrl
-        let urlTemplate = server.urlTemplate(routeId: routeId, tileSize: tileRenderer.tileSize)
+        let urlTemplate = server.urlTemplate(
+            routeId: routeId,
+            tileSize: tileRenderer.tileSize,
+            // 版は URL に入れる。同じ URL のままだと地図は描画済みのタイルを取り直さない。
+            cacheKey: "v\(tileVersion)"
+        )
         MCLog.marker("MapKitMarkerController.updateTileOverlay addOverlay urlTemplate=\(urlTemplate) tileSize=\(tileRenderer.tileSize)")
         // MKTileOverlay.tileSize=256 ensures MapKit requests tiles at the correct zoom level.
         // The server returns retinaAwareTileSize images for Retina sharpness.
