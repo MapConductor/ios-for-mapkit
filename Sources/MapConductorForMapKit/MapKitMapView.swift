@@ -286,6 +286,7 @@ private struct MapKitMapViewRepresentable: UIViewRepresentable {
             controller.registerOverlayController(polygonController)
             controller.registerOverlayController(groundImageController)
             controller.registerOverlayController(rasterLayerController)
+            controller.clearOverlaysHandler = { [weak self] in await self?.clearOverlays() }
 
             let overlayScope = MapOverlayScope()
             self.overlayScope = overlayScope
@@ -314,6 +315,17 @@ private struct MapKitMapViewRepresentable: UIViewRepresentable {
                     }
                 }
             }
+        }
+
+        /// android-sdk の `clearOverlays()` と同じく、各オーバーレイのコントローラを空にする。
+        /// `controller.clearOverlaysHandler` から呼ばれる。
+        func clearOverlays() async {
+            await markerController?.clear()
+            await polylineController?.clear()
+            await polygonController?.clear()
+            await groundImageController?.clear()
+            await circleController?.clear()
+            await rasterLayerController?.clear()
         }
 
         func unbind() {

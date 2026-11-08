@@ -64,10 +64,12 @@ final class MapKitViewController: MapViewControllerProtocol {
         cancelCameraAnimation()
     }
 
+    /// ``clearOverlays()`` の中身。オーバーレイのコントローラはホストが持っているので、
+    /// ホストが生成時に設定する（android-sdk と同じく、各コントローラの `clear()` を呼ぶ）。
+    var clearOverlaysHandler: (@MainActor () async -> Void)?
+
     func clearOverlays() async {
-        guard let mapView = mapView else { return }
-        mapView.removeAnnotations(mapView.annotations)
-        mapView.removeOverlays(mapView.overlays)
+        await clearOverlaysHandler?()
     }
 
     func setCameraMoveStartListener(listener: OnCameraMoveHandler?) {
