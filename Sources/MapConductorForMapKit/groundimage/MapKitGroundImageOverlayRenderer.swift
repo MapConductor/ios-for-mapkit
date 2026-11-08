@@ -1,6 +1,6 @@
 import CoreLocation
 import MapKit
-import MapConductorCore
+@_spi(MapConductorDriver) import MapConductorCore
 import UIKit
 
 // Custom MKOverlay for ground images
@@ -98,7 +98,7 @@ final class MapKitGroundImageOverlayRenderer: AbstractGroundImageOverlayRenderer
         renderersByStateId[state.id] = renderer
         overlaysByStateId[state.id] = overlay
 
-        mapView.addOverlay(overlay, level: .aboveLabels)
+        MapKitOverlayStacking.add(overlay, OverlayStackKey(.groundImage), to: mapView)
 
         return overlay
     }

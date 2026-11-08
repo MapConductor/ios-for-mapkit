@@ -1,5 +1,5 @@
 import MapKit
-import MapConductorCore
+@_spi(MapConductorDriver) import MapConductorCore
 import UIKit
 
 /// MapKit は穴（inner rings）をネイティブに描画できるため、ラスタタイルマスクは使わない
@@ -48,7 +48,7 @@ final class MapKitPolygonOverlayRenderer: AbstractPolygonOverlayRenderer<MKPolyg
         renderer.fillColor = resolved.fillColor
         renderer.update(rings: rings)
         renderersByPolygonId[resolved.id] = renderer
-        mapView.addOverlay(polygon)
+        MapKitOverlayStacking.add(polygon, OverlayStackKey(.polygon, zIndex: resolved.zIndex), to: mapView)
         return polygon
     }
 
