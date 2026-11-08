@@ -326,6 +326,8 @@ private struct MapKitMapViewRepresentable: UIViewRepresentable {
             await groundImageController?.clear()
             await circleController?.clear()
             await rasterLayerController?.clear()
+            // strategy（クラスタリングなど）が描いたマーカーも消す。
+            await state.serviceRegistry.clearMarkerRendering()
         }
 
         func unbind() {
