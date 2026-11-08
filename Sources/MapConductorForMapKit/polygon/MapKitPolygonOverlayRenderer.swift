@@ -132,8 +132,9 @@ final class MapKitPolygonOverlayRenderer: AbstractPolygonOverlayRenderer<MKPolyg
     /// リングをコア共通の補間（geodesic は球面補間・非 geodesic は線形補間）で密度化して
     /// `CLLocationCoordinate2D` へ変換する。外周・穴の両方に同じ処理を通す。
     private func ring(_ points: [GeoPointProtocol], geodesic: Bool) -> [CLLocationCoordinate2D] {
+        // geodesic は閉じる辺（末尾 → 先頭）も大圏で補間する（塗りと輪郭が同じ MKPolygon）。
         let geoPoints: [GeoPointProtocol] = geodesic
-            ? WGS84Geodesic.createInterpolatePoints(points)
+            ? densifyGeodesicRing(points)
             : Planar.createInterpolatePoints(points)
         return geoPoints.map { CLLocationCoordinate2D(latitude: $0.latitude, longitude: $0.longitude) }
     }
