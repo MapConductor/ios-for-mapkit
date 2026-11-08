@@ -236,7 +236,8 @@ final class MapKitMarkerController: AbstractMarkerController<MKPointAnnotation, 
         // MKTileOverlay.tileSize=256 ensures MapKit requests tiles at the correct zoom level.
         // The server returns retinaAwareTileSize images for Retina sharpness.
         let overlay = MarkerTileOverlay(urlTemplate: urlTemplate, tileSize: 256)
-        mapView.addOverlay(overlay, level: .aboveLabels)
+        // マーカーのタイルはマーカーと同じ帯（オーバーレイの中では一番上）。
+        MapKitOverlayStacking.add(overlay, OverlayStackKey(.marker), to: mapView)
         tileOverlay = overlay
     }
 

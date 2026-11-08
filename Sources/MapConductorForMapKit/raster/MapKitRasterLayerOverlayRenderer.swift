@@ -1,5 +1,5 @@
 import MapKit
-import MapConductorCore
+@_spi(MapConductorDriver) import MapConductorCore
 
 @MainActor
 final class MapKitRasterLayerOverlayRenderer: AbstractRasterLayerOverlayRenderer<MKTileOverlay> {
@@ -24,7 +24,7 @@ final class MapKitRasterLayerOverlayRenderer: AbstractRasterLayerOverlayRenderer
         // Important: MapKit may request a renderer immediately as part of addOverlay().
         // Ensure we have the renderer registered before adding the overlay to the map.
         if state.visible {
-            mapView.addOverlay(overlay, level: .aboveLabels)
+            MapKitOverlayStacking.add(overlay, OverlayStacking.rasterKey(stateId: state.id, zIndex: state.zIndex), to: mapView)
         }
 
         return overlay
@@ -56,7 +56,7 @@ final class MapKitRasterLayerOverlayRenderer: AbstractRasterLayerOverlayRenderer
         if finger.visible != prevFinger.visible {
             if current.state.visible {
                 if layer.isKind(of: MKTileOverlay.self) && !mapView.overlays.contains(where: { $0 === layer }) {
-                    mapView.addOverlay(layer, level: .aboveLabels)
+                    MapKitOverlayStacking.add(layer, OverlayStacking.rasterKey(stateId: current.state.id, zIndex: current.state.zIndex), to: mapView)
                 }
             } else {
                 mapView.removeOverlay(layer)
