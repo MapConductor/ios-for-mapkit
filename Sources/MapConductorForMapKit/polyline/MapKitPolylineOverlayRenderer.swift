@@ -1,5 +1,5 @@
 import MapKit
-import MapConductorCore
+@_spi(MapConductorDriver) import MapConductorCore
 import UIKit
 
 @MainActor
@@ -27,7 +27,7 @@ final class MapKitPolylineOverlayRenderer: AbstractPolylineOverlayRenderer<MKPol
         renderer.lineWidth = CGFloat(state.strokeWidth)
 
         renderersByPolylineId[state.id] = renderer
-        mapView.addOverlay(polyline)
+        MapKitOverlayStacking.add(polyline, OverlayStackKey(.polyline, zIndex: state.zIndex), to: mapView)
 
         return polyline
     }

@@ -1,5 +1,5 @@
 import MapKit
-import MapConductorCore
+@_spi(MapConductorDriver) import MapConductorCore
 import UIKit
 
 /// MapKit は穴（inner rings）をネイティブに描画できるため、ラスタタイルマスクは使わない
@@ -48,7 +48,7 @@ final class MapKitPolygonOverlayRenderer: AbstractPolygonOverlayRenderer<MKPolyg
         renderer.fillColor = resolved.fillColor
         renderer.update(rings: rings)
         renderersByPolygonId[resolved.id] = renderer
-        mapView.addOverlay(polygon)
+        MapKitOverlayStacking.add(polygon, OverlayStackKey(.polygon, zIndex: resolved.zIndex), to: mapView)
         return polygon
     }
 
@@ -132,10 +132,9 @@ final class MapKitPolygonOverlayRenderer: AbstractPolygonOverlayRenderer<MKPolyg
     /// リングをコア共通の補間（geodesic は球面補間・非 geodesic は線形補間）で密度化して
     /// `CLLocationCoordinate2D` へ変換する。外周・穴の両方に同じ処理を通す。
     private func ring(_ points: [GeoPointProtocol], geodesic: Bool) -> [CLLocationCoordinate2D] {
-        let geoPoints: [GeoPointProtocol] = geodesic
-            ? WGS84Geodesic.createInterpolatePoints(points)
-            : Planar.createInterpolatePoints(points)
-        return geoPoints.map { CLLocationCoordinate2D(latitude: $0.latitude, longitude: $0.longitude) }
+        // 閉じる辺（末尾 → 先頭）も他の辺と同じく補間する（塗りと輪郭が同じ MKPolygon）。
+        // geodesic は大圏、geodesic=false は緯度経度の線形補間（ポリラインの false と同じ線）。
+        densifyPolygonRing(points, geodesic: geodesic).map { CLLocationCoordinate2D(latitude: $0.latitude, longitude: $0.longitude) }
     }
 }
 

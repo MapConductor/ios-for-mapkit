@@ -105,6 +105,12 @@ final class MapKitMarkerController: AbstractMarkerController<MKPointAnnotation, 
         markerManager.getEntity(id)?.state
     }
 
+    /// 最後に `syncMarkers` で受け取った一覧の state。`add` の Task が登録を終える前
+    /// （MapKit は `addAnnotation` の直後にビューを求めることがある）にも引ける。
+    func syncedMarkerState(for id: String) -> MarkerState? {
+        markerStatesById[id]
+    }
+
     func getIcon(for state: MarkerState) -> BitmapIcon {
         let resolvedIcon = state.icon ?? DefaultMarkerIcon()
         return resolvedIcon.toBitmapIcon()
@@ -236,7 +242,8 @@ final class MapKitMarkerController: AbstractMarkerController<MKPointAnnotation, 
         // MKTileOverlay.tileSize=256 ensures MapKit requests tiles at the correct zoom level.
         // The server returns retinaAwareTileSize images for Retina sharpness.
         let overlay = MarkerTileOverlay(urlTemplate: urlTemplate, tileSize: 256)
-        mapView.addOverlay(overlay, level: .aboveLabels)
+        // マーカーのタイルはマーカーと同じ帯（オーバーレイの中では一番上）。
+        MapKitOverlayStacking.add(overlay, OverlayStackKey(.marker), to: mapView)
         tileOverlay = overlay
     }
 
