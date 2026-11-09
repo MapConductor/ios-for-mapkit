@@ -1,6 +1,6 @@
 import CoreLocation
 import MapKit
-import MapConductorCore
+@_spi(MapConductorDriver) import MapConductorCore
 import UIKit
 
 @MainActor
@@ -36,7 +36,7 @@ final class MapKitCircleOverlayRenderer: AbstractCircleOverlayRenderer<MKPolygon
             renderer.fillColor = state.fillColor
 
             renderersByPolygon[ObjectIdentifier(polygon)] = renderer
-            mapView.addOverlay(polygon)
+            MapKitOverlayStacking.add(polygon, OverlayStackKey(.circle, zIndex: state.zIndex ?? 0), to: mapView)
             polygons.append(polygon)
         }
         fragmentsByCircleId[state.id] = polygons

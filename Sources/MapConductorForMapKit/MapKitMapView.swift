@@ -186,11 +186,9 @@ private struct MapKitMapViewRepresentable: UIViewRepresentable {
         private weak var draggingAnnotationView: MKAnnotationView?
         private var dragDisplayLink: CADisplayLink?
 
-        // Store icon for each marker state to provide to delegate (best-effort cache).
-        // `mapView(_:viewFor:)` should not depend on this cache because it can be called
-        // before `updateContent` finishes populating it.
-        private var markerIcons: [String: BitmapIcon] = [:]
-        private var markerStates: [String: MarkerState] = [:]
+        /// アイコンを持たないマーカーの絵。1 枚を使い回す（`DefaultMarkerIcon()` を毎回作ると
+        /// そのたびに描き直しになる）。
+        private let defaultBitmapIcon = DefaultMarkerIcon().toBitmapIcon()
 
         private lazy var strategyManager = StrategyMarkerManager<MKPointAnnotation, MapKitMarkerRenderer>(
             makeRenderer: { [weak self] strategy in
@@ -297,6 +295,7 @@ private struct MapKitMapViewRepresentable: UIViewRepresentable {
             controller.registerOverlayController(polygonController)
             controller.registerOverlayController(groundImageController)
             controller.registerOverlayController(rasterLayerController)
+            controller.clearOverlaysHandler = { [weak self] in await self?.clearOverlays() }
 
             let overlayScope = MapOverlayScope()
             self.overlayScope = overlayScope
@@ -325,6 +324,19 @@ private struct MapKitMapViewRepresentable: UIViewRepresentable {
                     }
                 }
             }
+        }
+
+        /// android-sdk の `clearOverlays()` と同じく、各オーバーレイのコントローラを空にする。
+        /// `controller.clearOverlaysHandler` から呼ばれる。
+        func clearOverlays() async {
+            await markerController?.clear()
+            await polylineController?.clear()
+            await polygonController?.clear()
+            await groundImageController?.clear()
+            await circleController?.clear()
+            await rasterLayerController?.clear()
+            // strategy（クラスタリングなど）が描いたマーカーも消す。
+            await state.serviceRegistry.clearMarkerRendering()
         }
 
         func unbind() {
@@ -359,8 +371,6 @@ private struct MapKitMapViewRepresentable: UIViewRepresentable {
             groundImageController = nil
             overlayScope?.clear()
             overlayScope = nil
-            markerIcons.removeAll()
-            markerStates.removeAll()
 
             strategyMarkerIcons.removeAll()
             strategyManager.clear()
@@ -373,15 +383,11 @@ private struct MapKitMapViewRepresentable: UIViewRepresentable {
             }
             infoBubbleCoordinator?.syncInfoBubbles(content.infoBubbles)
 
-            // Prime marker caches before triggering MKMapView annotation creation.
-            // (MapKit can ask for annotation views immediately after addAnnotation.)
-            markerIcons = content.markers.reduce(into: [:]) { dict, marker in
-                dict[marker.id] = (marker.state.icon ?? DefaultMarkerIcon()).toBitmapIcon()
-            }
-            markerStates = content.markers.reduce(into: [:]) { dict, marker in
-                dict[marker.id] = marker.state
-            }
-
+            // マーカーは門番（MarkerListIdentity、syncMarkers の入口）を通るものだけを触る。
+            // ここで全マーカーのアイコンや辞書を作ると、同じ一覧の再送でも body の評価ごとに
+            // 14.4 万本ぶん（@Published の icon の読み出しと、アイコンを持たないマーカーの
+            // 描き直し）が走り、門番が意味を失う。アイコンは `mapView(_:viewFor:)` が
+            // その場で state から引き、追加直後の state はコントローラが同期的に持っている。
             markerController?.tilingOptions = content.markerTilingOptions
             markerController?.syncMarkers(content.markers)
             overlayScope?.circleCollector.sync(content.circles.map { $0.state })
@@ -511,17 +517,20 @@ private struct MapKitMapViewRepresentable: UIViewRepresentable {
             let mapConductorAnnotation = pointAnnotation as? MapConductorPointAnnotation
             let markerIdString = mapConductorAnnotation?.markerId ?? pointAnnotation.title ?? ""
             let markerState = markerController?.getMarkerState(for: markerIdString)
-                ?? markerStates[markerIdString]
+                ?? markerController?.syncedMarkerState(for: markerIdString)
                 ?? strategyManager.controller?.markerManager.getEntity(markerIdString)?.state
                 ?? mapConductorAnnotation?.markerState
-            let cachedIcon = markerIcons[markerIdString] ?? mapConductorAnnotation?.initialBitmapIcon
-                ?? strategyMarkerIcons[markerIdString]
+            // アイコンは state の今の値から引く（`toBitmapIcon()` はアイコンごとに描いた絵を
+            // 覚えているので軽い）。in-place で差し替えたアイコンも、ビューが作り直されたときに
+            // 古い絵へ戻らない。
+            let stateIcon = markerState.map { $0.icon?.toBitmapIcon() ?? defaultBitmapIcon }
+            let fallbackIcon = mapConductorAnnotation?.initialBitmapIcon ?? strategyMarkerIcons[markerIdString]
 
             // If this isn't one of our markers, allow MapKit's default behavior.
-            if markerState == nil, cachedIcon == nil { return nil }
+            if markerState == nil, fallbackIcon == nil { return nil }
 
             // Avoid returning nil here; returning nil makes MapKit fall back to the default pin annotation.
-            let resolvedIcon = cachedIcon ?? (markerState?.icon ?? DefaultMarkerIcon()).toBitmapIcon()
+            let resolvedIcon = stateIcon ?? fallbackIcon ?? defaultBitmapIcon
 
             let identifier = "MapKitMarker"
             let annotationView = mapView.dequeueReusableAnnotationView(withIdentifier: identifier)
@@ -529,7 +538,8 @@ private struct MapKitMapViewRepresentable: UIViewRepresentable {
 
             annotationView.annotation = annotation
             if let markerState {
-                if markerController?.getMarkerState(for: markerIdString) != nil || markerStates[markerIdString] != nil {
+                if markerController?.getMarkerState(for: markerIdString) != nil
+                    || markerController?.syncedMarkerState(for: markerIdString) != nil {
                     markerController?.renderer.configureAnnotationView(annotationView, for: markerState, bitmapIcon: resolvedIcon)
                 } else {
                     strategyManager.renderer?.configureAnnotationView(annotationView, for: markerState, bitmapIcon: resolvedIcon)
@@ -557,7 +567,7 @@ private struct MapKitMapViewRepresentable: UIViewRepresentable {
             guard let pointAnnotation = view.annotation as? MKPointAnnotation,
                   let markerId = pointAnnotation.title,
                   let markerState = markerController?.getMarkerState(for: markerId)
-                    ?? markerStates[markerId]
+                    ?? markerController?.syncedMarkerState(for: markerId)
                     ?? strategyManager.controller?.markerManager.getEntity(markerId)?.state else {
                 return
             }
@@ -578,7 +588,7 @@ private struct MapKitMapViewRepresentable: UIViewRepresentable {
             guard let pointAnnotation = view.annotation as? MKPointAnnotation,
                   let markerId = pointAnnotation.title,
                   let markerState = markerController?.getMarkerState(for: markerId)
-                    ?? markerStates[markerId] else {
+                    ?? markerController?.syncedMarkerState(for: markerId) else {
                 return
             }
 
