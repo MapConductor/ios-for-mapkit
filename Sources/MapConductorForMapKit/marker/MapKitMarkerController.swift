@@ -201,6 +201,7 @@ final class MapKitMarkerController: AbstractMarkerController<MKPointAnnotation, 
             defaultMarkerIcon: defaultMarkerIconForTiling,
             tilingEnabled: tilingOptions.enabled,
             tiledMarkerIds: &localTiledMarkerIds,
+            addedTracker: addedTracker,
             shouldTile: { [shouldTileAll] _ in shouldTileAll }
         )
         tiledMarkerIds = localTiledMarkerIds
@@ -211,6 +212,9 @@ final class MapKitMarkerController: AbstractMarkerController<MKPointAnnotation, 
             tileVersion += 1
             updateTileOverlay(hasTiledMarkers: result.hasTiledMarkers)
         }
+
+        // The newly tiled markers are on the map once their tile layer is.
+        await addedTracker.admitAndNotify(result.tiledAdded)
     }
 
     private func refreshTileLayerIfNeeded() {
