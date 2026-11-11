@@ -291,6 +291,15 @@ private struct MapKitMapViewRepresentable: UIViewRepresentable {
                 }
             }
             polylineController.tiler = polylineTiler
+            let circleTiler = CircleTiler()
+            circleTiler.onTemplate = { [weak rasterLayerController] template, tileSize in
+                if let template {
+                    await rasterLayerController?.upsert(state: CircleTiler.rasterLayerState(template: template, tileSize: tileSize))
+                } else {
+                    await rasterLayerController?.removeById(CircleTiler.layerId)
+                }
+            }
+            circleController.tiler = circleTiler
 
             let groundImageController = MapKitGroundImageController(mapView: mapView)
             self.groundImageController = groundImageController
@@ -391,6 +400,7 @@ private struct MapKitMapViewRepresentable: UIViewRepresentable {
             MCLog.map("MapKitMapView.updateContent markers=\(content.markers.count) circles=\(content.circles.count) polylines=\(content.polylines.count) polygons=\(content.polygons.count)")
             if let mapView {
                 polylineController?.setCurrentCameraPosition(currentCameraPosition(from: mapView))
+                circleController?.setCurrentCameraPosition(currentCameraPosition(from: mapView))
             }
             infoBubbleCoordinator?.syncInfoBubbles(content.infoBubbles)
 
@@ -406,7 +416,9 @@ private struct MapKitMapViewRepresentable: UIViewRepresentable {
             overlayScope?.polygonCollector.sync(content.polygons.map { $0.state })
             polygonController?.tiler?.refreshIfServerMoved()
             if polylineController?.tiler?.setOptions(content.polylineTilingOptions) == true { overlayScope?.polylineCollector.flush() }
+            if circleController?.tiler?.setOptions(content.circleTilingOptions) == true { overlayScope?.circleCollector.flush() }
             polylineController?.tiler?.refreshIfServerMoved()
+            circleController?.tiler?.refreshIfServerMoved()
             for handler in content.polygonSyncHandlers {
                 let hullController = hullPolygonController
                 handler.bindPolygonSync { [weak hullController] states in
@@ -424,6 +436,7 @@ private struct MapKitMapViewRepresentable: UIViewRepresentable {
             isRegionChanging = true
             let camera = currentCameraPosition(from: mapView)
             polylineController?.setCurrentCameraPosition(camera)
+            circleController?.setCurrentCameraPosition(camera)
             controller?.notifyCameraMoveStart(camera)
             onCameraMoveStart?(camera)
         }
@@ -433,6 +446,7 @@ private struct MapKitMapViewRepresentable: UIViewRepresentable {
             let camera = mapView.toMapCameraPosition(logicalTiltHint: controller?.lastLogicalTilt)
             state.updateCameraPosition(camera)
             polylineController?.setCurrentCameraPosition(camera)
+            circleController?.setCurrentCameraPosition(camera)
             controller?.notifyCameraMove(camera)
             onCameraMove?(camera)
             Task { [weak self] in
@@ -451,6 +465,7 @@ private struct MapKitMapViewRepresentable: UIViewRepresentable {
             if controller?.applyCameraRestrictionCorrectionIfNeeded(camera) == true { return }
             state.updateCameraPosition(camera)
             polylineController?.setCurrentCameraPosition(camera)
+            circleController?.setCurrentCameraPosition(camera)
             controller?.notifyCameraMoveEnd(camera)
             onCameraMoveEnd?(camera)
             Task { [weak self] in
@@ -473,6 +488,7 @@ private struct MapKitMapViewRepresentable: UIViewRepresentable {
 
             // Ensure polyline hit-testing uses the current zoom even if no region-change callbacks have fired yet.
             polylineController?.setCurrentCameraPosition(currentCameraPosition(from: mapView))
+            circleController?.setCurrentCameraPosition(currentCameraPosition(from: mapView))
 
             // If the user tapped a marker/annotation view, do not also fire map click.
             // (A tap gesture recognizer attached to MKMapView can still recognize taps on subviews.)
