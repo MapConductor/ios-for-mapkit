@@ -8,6 +8,12 @@ private let mapConductorTileSizePoints: Double = 256.0
 private let minCosLat: Double = 0.01
 private let minCosTilt: Double = 0.05
 
+/// MapKit（iOS）のカメラの縦の視野角（度）。
+///
+/// MapKit は値を公開していない。iPad Pro 11 で、傾けた地図の中心と北の地点の画面位置から
+/// 焦点距離を求めて実測した値（tilt 30°）。
+let mapKitVerticalFieldOfView: Double = 30.0
+
 // Convert from MapCameraPosition to MKMapCamera
 public extension MapCameraPosition {
     /// Pass the target map view so the camera distance is derived from the view's actual

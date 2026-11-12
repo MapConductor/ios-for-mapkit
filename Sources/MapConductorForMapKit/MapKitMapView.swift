@@ -443,7 +443,8 @@ private struct MapKitMapViewRepresentable: UIViewRepresentable {
 
         func mapViewDidChangeVisibleRegion(_ mapView: MKMapView) {
             guard isRegionChanging else { return }
-            let camera = mapView.toMapCameraPosition(logicalTiltHint: controller?.lastLogicalTilt)
+            let raw = mapView.toMapCameraPosition(logicalTiltHint: controller?.lastLogicalTilt)
+            let camera = controller?.reportedCamera(raw, mapView: mapView) ?? raw
             state.updateCameraPosition(camera)
             polylineController?.setCurrentCameraPosition(camera)
             circleController?.setCurrentCameraPosition(camera)
@@ -767,10 +768,11 @@ private struct MapKitMapViewRepresentable: UIViewRepresentable {
                 farRight: geoPoint(at: CGPoint(x: mapView.bounds.maxX, y: 0), mapView: mapView)
             )
 
-            return mapView.toMapCameraPosition(
+            let raw = mapView.toMapCameraPosition(
                 logicalTiltHint: controller?.lastLogicalTilt,
                 visibleRegion: visibleRegion
             )
+            return controller?.reportedCamera(raw, mapView: mapView) ?? raw
         }
 
         private func geoPoint(at point: CGPoint, mapView: MKMapView) -> GeoPoint? {
