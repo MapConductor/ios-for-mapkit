@@ -16,6 +16,9 @@ final class MapKitViewController: MapViewControllerProtocol {
     let overlayControllers = OverlayControllerRegistry()
     private weak var mapView: MKMapView?
     private(set) var lastLogicalTilt: Double?
+    /// 直近の移動で要求されたパディング。MapKit のカメラはパディングを持たないので、中心をずらして
+    /// 再現し（``CameraPaddingEmulation``）、読み戻しで逆にずらすときに使う。
+    private(set) var lastPaddings: MapPaddingsProtocol?
     private let tileSizePoints: Double = 256.0
     private let minCosLat: Double = 0.01
 
@@ -96,9 +99,11 @@ final class MapKitViewController: MapViewControllerProtocol {
         mapInitializedListener = listener
     }
 
-    func moveCamera(position: MapCameraPosition) {
+    func moveCamera(position requested: MapCameraPosition) {
         cancelCameraAnimation()
         guard let mapView = mapView else { return }
+        lastPaddings = requested.paddings
+        let position = paddingApplied(requested, mapView: mapView)
         lastLogicalTilt = position.tilt
         if abs(position.tilt) < 0.01, mapView.bounds.isEmpty {
             DispatchQueue.main.async { [weak self, weak mapView] in
@@ -113,14 +118,17 @@ final class MapKitViewController: MapViewControllerProtocol {
         mapView.setCamera(camera, animated: false)
     }
 
-    func animateCamera(position: MapCameraPosition, duration: Long) {
+    func animateCamera(position requested: MapCameraPosition, duration: Long) {
         cancelCameraAnimation()
         guard let mapView = mapView else { return }
         let durationSeconds = Double(duration) / 1000.0
         guard durationSeconds > 0 else {
-            moveCamera(position: position)
+            moveCamera(position: requested)
             return
         }
+        lastPaddings = requested.paddings
+        // 補間は「画面中心」の空間で行う（from も中心のまま読む）。
+        let position = paddingApplied(requested, mapView: mapView)
 
         let from = mapView.toMapCameraPosition(logicalTiltHint: lastLogicalTilt)
         lastLogicalTilt = position.tilt
@@ -299,6 +307,21 @@ final class MapKitViewController: MapViewControllerProtocol {
         if progress >= 1.0 {
             cancelCameraAnimation()
         }
+    }
+
+    /// MapKit へ渡すカメラ。パディングの分だけ中心をずらす。
+    private func paddingApplied(_ position: MapCameraPosition, mapView: MKMapView) -> MapCameraPosition {
+        CameraPaddingEmulation.applied(to: position, fov: mapKitVerticalFieldOfView, viewportSize: mapView.bounds.size)
+    }
+
+    /// MapKit から読み戻したカメラ（画面中心）を、ターゲット・パディング・視野角を持つカメラへ戻す。
+    func reportedCamera(_ camera: MapCameraPosition, mapView: MKMapView) -> MapCameraPosition {
+        CameraPaddingEmulation.restored(
+            camera,
+            paddings: lastPaddings,
+            fov: mapKitVerticalFieldOfView,
+            viewportSize: mapView.bounds.size
+        )
     }
 
     private func applyCameraFrame(_ position: MapCameraPosition, mapView: MKMapView) {
