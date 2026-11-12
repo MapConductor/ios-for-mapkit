@@ -19,6 +19,8 @@ final class MapKitViewController: MapViewControllerProtocol {
     /// 直近の移動で要求されたパディング。MapKit のカメラはパディングを持たないので、中心をずらして
     /// 再現し（``CameraPaddingEmulation``）、読み戻しで逆にずらすときに使う。
     private(set) var lastPaddings: MapPaddingsProtocol?
+    /// アニメーションの終わりに、ターゲットの位置を投影で詰め直すための要求。
+    private var cameraAnimationRequested: MapCameraPosition?
     private let tileSizePoints: Double = 256.0
     private let minCosLat: Double = 0.01
 
@@ -112,10 +114,12 @@ final class MapKitViewController: MapViewControllerProtocol {
             }
         }
         if applyTopDownZoom(position: position, mapView: mapView, animated: false) {
+            correctPaddedTarget(requested, mapView: mapView)
             return
         }
         let camera = position.toMKMapCamera(on: mapView)
         mapView.setCamera(camera, animated: false)
+        correctPaddedTarget(requested, mapView: mapView)
     }
 
     func animateCamera(position requested: MapCameraPosition, duration: Long) {
@@ -129,6 +133,7 @@ final class MapKitViewController: MapViewControllerProtocol {
         lastPaddings = requested.paddings
         // 補間は「画面中心」の空間で行う（from も中心のまま読む）。
         let position = paddingApplied(requested, mapView: mapView)
+        cameraAnimationRequested = requested
 
         let from = mapView.toMapCameraPosition(logicalTiltHint: lastLogicalTilt)
         lastLogicalTilt = position.tilt
@@ -273,6 +278,7 @@ final class MapKitViewController: MapViewControllerProtocol {
     }
 
     private func cancelCameraAnimation() {
+        cameraAnimationRequested = nil
         cameraAnimationDisplayLink?.invalidate()
         cameraAnimationDisplayLink = nil
         cameraAnimationFrames.removeAll()
@@ -303,6 +309,10 @@ final class MapKitViewController: MapViewControllerProtocol {
             let frame = cameraAnimationFrames[targetIndex]
             applyCameraFrame(frame, mapView: mapView)
         }
+        if progress >= 1.0, let requested = cameraAnimationRequested {
+            cameraAnimationRequested = nil
+            correctPaddedTarget(requested, mapView: mapView)
+        }
 
         if progress >= 1.0 {
             cancelCameraAnimation()
@@ -315,13 +325,40 @@ final class MapKitViewController: MapViewControllerProtocol {
     }
 
     /// MapKit から読み戻したカメラ（画面中心）を、ターゲット・パディング・視野角を持つカメラへ戻す。
+    /// ターゲットはパディングの残りの中央にある地点を地図に直接聞く。
     func reportedCamera(_ camera: MapCameraPosition, mapView: MKMapView) -> MapCameraPosition {
         CameraPaddingEmulation.restored(
             camera,
             paddings: lastPaddings,
             fov: mapKitVerticalFieldOfView,
-            viewportSize: mapView.bounds.size
+            viewportSize: mapView.bounds.size,
+            unproject: { [weak mapView] point in
+                guard let mapView else { return nil }
+                let coordinate = mapView.convert(point, toCoordinateFrom: mapView)
+                return GeoPoint(latitude: coordinate.latitude, longitude: coordinate.longitude)
+            }
         )
+    }
+
+    /// 計算で置いた中心だと、MapKit の縮尺のずれや pitch の上限（高度で変わる）でターゲットが
+    /// ずれる。地図の投影で実際の位置を測り、パディングの残りの中央に来るまで中心だけを動かし直す。
+    private func correctPaddedTarget(_ requested: MapCameraPosition, mapView: MKMapView) {
+        let target = CLLocationCoordinate2D(latitude: requested.position.latitude, longitude: requested.position.longitude)
+        for _ in 0..<3 {
+            guard let center = CameraPaddingEmulation.correctedCenter(
+                target: requested.position,
+                paddings: requested.paddings,
+                viewportSize: mapView.bounds.size,
+                project: { _ in mapView.convert(target, toPointTo: mapView) },
+                unproject: { point in
+                    let coordinate = mapView.convert(point, toCoordinateFrom: mapView)
+                    return GeoPoint(latitude: coordinate.latitude, longitude: coordinate.longitude)
+                }
+            ) else { return }
+            let camera = mapView.camera.copy() as! MKMapCamera
+            camera.centerCoordinate = CLLocationCoordinate2D(latitude: center.latitude, longitude: center.longitude)
+            mapView.setCamera(camera, animated: false)
+        }
     }
 
     private func applyCameraFrame(_ position: MapCameraPosition, mapView: MKMapView) {
