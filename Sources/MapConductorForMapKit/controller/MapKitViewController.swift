@@ -342,22 +342,27 @@ final class MapKitViewController: MapViewControllerProtocol {
 
     /// 計算で置いた中心だと、MapKit の縮尺のずれや pitch の上限（高度で変わる）でターゲットが
     /// ずれる。地図の投影で実際の位置を測り、パディングの残りの中央に来るまで中心だけを動かし直す。
-    private func correctPaddedTarget(_ requested: MapCameraPosition, mapView: MKMapView) {
+    private func correctPaddedTarget(_ requested: MapCameraPosition, mapView: MKMapView, remaining: Int = 3) {
+        guard remaining > 0 else { return }
         let target = CLLocationCoordinate2D(latitude: requested.position.latitude, longitude: requested.position.longitude)
-        for _ in 0..<3 {
-            guard let center = CameraPaddingEmulation.correctedCenter(
-                target: requested.position,
-                paddings: requested.paddings,
-                viewportSize: mapView.bounds.size,
-                project: { _ in mapView.convert(target, toPointTo: mapView) },
-                unproject: { point in
-                    let coordinate = mapView.convert(point, toCoordinateFrom: mapView)
-                    return GeoPoint(latitude: coordinate.latitude, longitude: coordinate.longitude)
-                }
-            ) else { return }
+        guard let center = CameraPaddingEmulation.correctedCenter(
+            target: requested.position,
+            paddings: requested.paddings,
+            viewportSize: mapView.bounds.size,
+            project: { _ in mapView.convert(target, toPointTo: mapView) },
+            unproject: { point in
+                let coordinate = mapView.convert(point, toCoordinateFrom: mapView)
+                return GeoPoint(latitude: coordinate.latitude, longitude: coordinate.longitude)
+            }
+        ) else { return }
+        // 1 回ずつ次のランループで当てる。同じランループで続けて setCamera すると MapKit は
+        // 領域変更の通知をまとめてしまい、state に途中のカメラが残る。
+        DispatchQueue.main.async { [weak self, weak mapView] in
+            guard let self, let mapView else { return }
             let camera = mapView.camera.copy() as! MKMapCamera
             camera.centerCoordinate = CLLocationCoordinate2D(latitude: center.latitude, longitude: center.longitude)
             mapView.setCamera(camera, animated: false)
+            self.correctPaddedTarget(requested, mapView: mapView, remaining: remaining - 1)
         }
     }
 
