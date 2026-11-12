@@ -1,16 +1,18 @@
 import CoreGraphics
 import CoreLocation
 import MapKit
-import MapConductorCore
+@_spi(MapConductorDriver) import MapConductorCore
 
 @MainActor
-final class MapKitMarkerRenderer: MarkerOverlayRendererProtocol {
+final class MapKitMarkerRenderer: MarkerOverlayRendererProtocol, MarkerDrawOrderFrameReceiver {
     typealias ActualMarker = MKPointAnnotation
 
     private static let maxConcurrentAnimations = 30
     private static let minAnimationUpdateInterval: CFTimeInterval = 1.0 / 4.0
 
     weak var mapView: MKMapView?
+    /// 重なり順を出すときの地図の向き（``MarkerDrawOrder``）。回すとコントローラが差し替える。
+    private var drawOrderFrame: MarkerDrawOrder.Frame = .northUp
     private let markerManager: MarkerManager<MKPointAnnotation>
     private var markerAnnotationViews: [String: MKAnnotationView] = [:]
     private var markerAnimationRunners: [String: MarkerAnimationRunner] = [:]
@@ -283,6 +285,36 @@ final class MapKitMarkerRenderer: MarkerOverlayRendererProtocol {
         mapView = nil
     }
 
+    /// ``MarkerDrawOrder`` を MapKit の `zPriority`（Float、0...1000、既定 500、大きいほど手前）へ写す。
+    ///
+    /// `500 + 5 × key`。zIndex は ±``zPriorityZIndexSpan`` に丸める（それを超える zIndex どうしは
+    /// 区別しない）。1 段を 5 にするのは、同じ zIndex の中の画面上の順位（key の小数部）を
+    /// Float でも数百 m 程度まで区別できるようにするため。選択中のビューは MapKit が
+    /// `selectedZPriority`（1000）へ上げる。
+    static func zPriority(
+        for state: MarkerState,
+        frame: MarkerDrawOrder.Frame = .northUp
+    ) -> MKAnnotationViewZPriority {
+        let zIndex = state.zIndex.map { min(max($0, -zPriorityZIndexSpan), zPriorityZIndexSpan) }
+        let key = MarkerDrawOrder.key(zIndex: zIndex, position: state.position, frame: frame)
+        return MKAnnotationViewZPriority(rawValue: Float(500.0 + 5.0 * key))
+    }
+
+    /// 回したら、同じ zIndex の中の順位（画面で下ほど手前）を付け直す。画面外でビューの無い
+    /// マーカーは、ビューが付くときに ``configureAnnotationView(_:for:bitmapIcon:)`` が新しい向きで書く。
+    func onDrawOrderFrameChanged(_ frame: MarkerDrawOrder.Frame, entities: [MarkerEntity<MKPointAnnotation>]) async {
+        drawOrderFrame = frame
+        guard let mapView else { return }
+        for entity in entities {
+            guard let annotation = entity.marker, let view = mapView.view(for: annotation) else { continue }
+            let priority = Self.zPriority(for: entity.state, frame: frame)
+            if view.zPriority != priority { view.zPriority = priority }
+        }
+    }
+
+    /// ``zPriority(for:)`` が区別する zIndex の絶対値の上限。
+    static let zPriorityZIndexSpan = 99
+
     func configureAnnotationView(_ view: MKAnnotationView, for state: MarkerState, bitmapIcon: BitmapIcon) {
         view.image = bitmapIcon.bitmap
         view.isDraggable = state.draggable
@@ -293,6 +325,9 @@ final class MapKitMarkerRenderer: MarkerOverlayRendererProtocol {
 
         // Store for later reference
         markerAnnotationViews[state.id] = view
+
+        // 重なり順。ビューは使い回されるので、毎回書く（書かないと前のマーカーの値が残る）。
+        view.zPriority = Self.zPriority(for: state, frame: drawOrderFrame)
 
         // Set anchor point based on icon anchor
         // MapKit's centerOffset is from the annotation coordinate to the view center

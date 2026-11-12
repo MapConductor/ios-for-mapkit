@@ -583,6 +583,8 @@ private struct MapKitMapViewRepresentable: UIViewRepresentable {
                     y: -(resolvedIcon.anchor.y - 0.5) * resolvedIcon.bitmap.size.height
                 )
                 annotationView.alpha = 1
+                // 使い回したビューに前のマーカーの順位を残さない。
+                annotationView.zPriority = .defaultUnselected
             }
 
             return annotationView
