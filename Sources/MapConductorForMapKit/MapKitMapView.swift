@@ -1,6 +1,6 @@
 import Combine
 import MapKit
-import MapConductorCore
+@_spi(MapConductorDriver) import MapConductorCore
 import QuartzCore
 import SwiftUI
 import UIKit
@@ -9,6 +9,8 @@ public struct MapKitMapView: View {
     @ObservedObject private var state: MapKitViewState
     private let handlers: MapViewHandlers<MapKitViewState>
     private let cameraRestriction: CameraRestriction?
+    private let style: MapViewStyle?
+    private let onStyleDiagnostics: (([String]) -> Void)?
     private let content: () -> MapViewContent
 
     public init(
@@ -21,10 +23,18 @@ public struct MapKitMapView: View {
         onCameraMove: OnCameraMoveHandler? = nil,
         onCameraMoveEnd: OnCameraMoveHandler? = nil,
         sdkInitialize: (() -> Void)? = nil,
+        /// How the map looks, when the app states it rather than naming a
+        /// design. `MapConductorVectorStyle` builds one; what happens
+        /// underneath depends on this backend and the app does not have to
+        /// know.
+        style: MapViewStyle? = nil,
+        onStyleDiagnostics: (([String]) -> Void)? = nil,
         @MapViewContentBuilder content: @escaping () -> MapViewContent = { MapViewContent() }
     ) {
         self.state = state
         self.cameraRestriction = cameraRestriction
+        self.style = style
+        self.onStyleDiagnostics = onStyleDiagnostics
         self.handlers = MapViewHandlers(
             onMapLoaded: onMapLoaded,
             onMapClick: onMapClick,
@@ -54,6 +64,8 @@ public struct MapKitMapView: View {
                 state: state,
                 cameraRestriction: cameraRestriction,
                 handlers: handlers,
+                style: style,
+                onStyleDiagnostics: onStyleDiagnostics,
                 content: mapContent
             )
         }
@@ -64,6 +76,8 @@ private struct MapKitMapViewRepresentable: UIViewRepresentable {
     @ObservedObject var state: MapKitViewState
     let cameraRestriction: CameraRestriction?
     let handlers: MapViewHandlers<MapKitViewState>
+    let style: MapViewStyle?
+    let onStyleDiagnostics: (([String]) -> Void)?
     let content: MapViewContent
 
     func makeCoordinator() -> Coordinator {
@@ -109,6 +123,9 @@ private struct MapKitMapViewRepresentable: UIViewRepresentable {
     }
 
     func updateUIView(_ uiView: MKMapView, context: Context) {
+        // Every evaluation of the app's `body` lands here; most calls do
+        // nothing. See `MapViewStyleHost.apply`.
+        context.coordinator.applyStyle(style, onDiagnostics: onStyleDiagnostics)
         // 制限値が変わったときだけ再適用する。
         context.coordinator.applyCameraRestriction(cameraRestriction)
         uiView.mapType = state.mapDesignType.getValue()
@@ -128,6 +145,7 @@ private struct MapKitMapViewRepresentable: UIViewRepresentable {
     }
 
     static func dismantleUIView(_ uiView: MKMapView, coordinator: Coordinator) {
+        coordinator.disposeStyle()
         coordinator.unbind()
         uiView.delegate = nil
     }
@@ -168,11 +186,9 @@ private struct MapKitMapViewRepresentable: UIViewRepresentable {
         private weak var draggingAnnotationView: MKAnnotationView?
         private var dragDisplayLink: CADisplayLink?
 
-        // Store icon for each marker state to provide to delegate (best-effort cache).
-        // `mapView(_:viewFor:)` should not depend on this cache because it can be called
-        // before `updateContent` finishes populating it.
-        private var markerIcons: [String: BitmapIcon] = [:]
-        private var markerStates: [String: MarkerState] = [:]
+        /// アイコンを持たないマーカーの絵。1 枚を使い回す（`DefaultMarkerIcon()` を毎回作ると
+        /// そのたびに描き直しになる）。
+        private let defaultBitmapIcon = DefaultMarkerIcon().toBitmapIcon()
 
         private lazy var strategyManager = StrategyMarkerManager<MKPointAnnotation, MapKitMarkerRenderer>(
             makeRenderer: { [weak self] strategy in
@@ -253,6 +269,37 @@ private struct MapKitMapViewRepresentable: UIViewRepresentable {
 
             let rasterLayerController = MapKitRasterLayerController(mapView: mapView)
             self.rasterLayerController = rasterLayerController
+            // Many polygons are drawn into raster tiles and shown as one raster
+            // layer; taps still resolve against the original shapes.
+            let polygonTiler = PolygonTiler()
+            polygonTiler.onTemplate = { [weak rasterLayerController] template, tileSize in
+                if let template {
+                    await rasterLayerController?.upsert(state: PolygonTiler.rasterLayerState(template: template, tileSize: tileSize))
+                } else {
+                    await rasterLayerController?.removeById(PolygonTiler.layerId)
+                }
+            }
+            polygonController.tiler = polygonTiler
+            // Many polylines likewise, in their own raster layer in the polyline band
+            // (under the natively drawn polylines); taps still resolve against the original lines.
+            let polylineTiler = PolylineTiler()
+            polylineTiler.onTemplate = { [weak rasterLayerController] template, tileSize in
+                if let template {
+                    await rasterLayerController?.upsert(state: PolylineTiler.rasterLayerState(template: template, tileSize: tileSize))
+                } else {
+                    await rasterLayerController?.removeById(PolylineTiler.layerId)
+                }
+            }
+            polylineController.tiler = polylineTiler
+            let circleTiler = CircleTiler()
+            circleTiler.onTemplate = { [weak rasterLayerController] template, tileSize in
+                if let template {
+                    await rasterLayerController?.upsert(state: CircleTiler.rasterLayerState(template: template, tileSize: tileSize))
+                } else {
+                    await rasterLayerController?.removeById(CircleTiler.layerId)
+                }
+            }
+            circleController.tiler = circleTiler
 
             let groundImageController = MapKitGroundImageController(mapView: mapView)
             self.groundImageController = groundImageController
@@ -268,6 +315,7 @@ private struct MapKitMapViewRepresentable: UIViewRepresentable {
             controller.registerOverlayController(polygonController)
             controller.registerOverlayController(groundImageController)
             controller.registerOverlayController(rasterLayerController)
+            controller.clearOverlaysHandler = { [weak self] in await self?.clearOverlays() }
 
             let overlayScope = MapOverlayScope()
             self.overlayScope = overlayScope
@@ -296,6 +344,19 @@ private struct MapKitMapViewRepresentable: UIViewRepresentable {
                     }
                 }
             }
+        }
+
+        /// android-sdk の `clearOverlays()` と同じく、各オーバーレイのコントローラを空にする。
+        /// `controller.clearOverlaysHandler` から呼ばれる。
+        func clearOverlays() async {
+            await markerController?.clear()
+            await polylineController?.clear()
+            await polygonController?.clear()
+            await groundImageController?.clear()
+            await circleController?.clear()
+            await rasterLayerController?.clear()
+            // strategy（クラスタリングなど）が描いたマーカーも消す。
+            await state.serviceRegistry.clearMarkerRendering()
         }
 
         func unbind() {
@@ -330,8 +391,6 @@ private struct MapKitMapViewRepresentable: UIViewRepresentable {
             groundImageController = nil
             overlayScope?.clear()
             overlayScope = nil
-            markerIcons.removeAll()
-            markerStates.removeAll()
 
             strategyMarkerIcons.removeAll()
             strategyManager.clear()
@@ -341,23 +400,25 @@ private struct MapKitMapViewRepresentable: UIViewRepresentable {
             MCLog.map("MapKitMapView.updateContent markers=\(content.markers.count) circles=\(content.circles.count) polylines=\(content.polylines.count) polygons=\(content.polygons.count)")
             if let mapView {
                 polylineController?.setCurrentCameraPosition(currentCameraPosition(from: mapView))
+                circleController?.setCurrentCameraPosition(currentCameraPosition(from: mapView))
             }
             infoBubbleCoordinator?.syncInfoBubbles(content.infoBubbles)
 
-            // Prime marker caches before triggering MKMapView annotation creation.
-            // (MapKit can ask for annotation views immediately after addAnnotation.)
-            markerIcons = content.markers.reduce(into: [:]) { dict, marker in
-                dict[marker.id] = (marker.state.icon ?? DefaultMarkerIcon()).toBitmapIcon()
-            }
-            markerStates = content.markers.reduce(into: [:]) { dict, marker in
-                dict[marker.id] = marker.state
-            }
-
+            // マーカーは門番（MarkerListIdentity、syncMarkers の入口）を通るものだけを触る。
+            // ここで全マーカーのアイコンや辞書を作ると、同じ一覧の再送でも body の評価ごとに
+            // 14.4 万本ぶん（@Published の icon の読み出しと、アイコンを持たないマーカーの
+            // 描き直し）が走り、門番が意味を失う。アイコンは `mapView(_:viewFor:)` が
+            // その場で state から引き、追加直後の state はコントローラが同期的に持っている。
             markerController?.tilingOptions = content.markerTilingOptions
             markerController?.syncMarkers(content.markers)
             overlayScope?.circleCollector.sync(content.circles.map { $0.state })
             overlayScope?.polylineCollector.sync(content.polylines.map { $0.state })
             overlayScope?.polygonCollector.sync(content.polygons.map { $0.state })
+            polygonController?.tiler?.refreshIfServerMoved()
+            if polylineController?.tiler?.setOptions(content.polylineTilingOptions) == true { overlayScope?.polylineCollector.flush() }
+            if circleController?.tiler?.setOptions(content.circleTilingOptions) == true { overlayScope?.circleCollector.flush() }
+            polylineController?.tiler?.refreshIfServerMoved()
+            circleController?.tiler?.refreshIfServerMoved()
             for handler in content.polygonSyncHandlers {
                 let hullController = hullPolygonController
                 handler.bindPolygonSync { [weak hullController] states in
@@ -375,15 +436,18 @@ private struct MapKitMapViewRepresentable: UIViewRepresentable {
             isRegionChanging = true
             let camera = currentCameraPosition(from: mapView)
             polylineController?.setCurrentCameraPosition(camera)
+            circleController?.setCurrentCameraPosition(camera)
             controller?.notifyCameraMoveStart(camera)
             onCameraMoveStart?(camera)
         }
 
         func mapViewDidChangeVisibleRegion(_ mapView: MKMapView) {
             guard isRegionChanging else { return }
-            let camera = mapView.toMapCameraPosition(logicalTiltHint: controller?.lastLogicalTilt)
+            let raw = mapView.toMapCameraPosition(logicalTiltHint: controller?.lastLogicalTilt)
+            let camera = controller?.reportedCamera(raw, mapView: mapView) ?? raw
             state.updateCameraPosition(camera)
             polylineController?.setCurrentCameraPosition(camera)
+            circleController?.setCurrentCameraPosition(camera)
             controller?.notifyCameraMove(camera)
             onCameraMove?(camera)
             Task { [weak self] in
@@ -402,6 +466,7 @@ private struct MapKitMapViewRepresentable: UIViewRepresentable {
             if controller?.applyCameraRestrictionCorrectionIfNeeded(camera) == true { return }
             state.updateCameraPosition(camera)
             polylineController?.setCurrentCameraPosition(camera)
+            circleController?.setCurrentCameraPosition(camera)
             controller?.notifyCameraMoveEnd(camera)
             onCameraMoveEnd?(camera)
             Task { [weak self] in
@@ -424,6 +489,7 @@ private struct MapKitMapViewRepresentable: UIViewRepresentable {
 
             // Ensure polyline hit-testing uses the current zoom even if no region-change callbacks have fired yet.
             polylineController?.setCurrentCameraPosition(currentCameraPosition(from: mapView))
+            circleController?.setCurrentCameraPosition(currentCameraPosition(from: mapView))
 
             // If the user tapped a marker/annotation view, do not also fire map click.
             // (A tap gesture recognizer attached to MKMapView can still recognize taps on subviews.)
@@ -481,17 +547,20 @@ private struct MapKitMapViewRepresentable: UIViewRepresentable {
             let mapConductorAnnotation = pointAnnotation as? MapConductorPointAnnotation
             let markerIdString = mapConductorAnnotation?.markerId ?? pointAnnotation.title ?? ""
             let markerState = markerController?.getMarkerState(for: markerIdString)
-                ?? markerStates[markerIdString]
+                ?? markerController?.syncedMarkerState(for: markerIdString)
                 ?? strategyManager.controller?.markerManager.getEntity(markerIdString)?.state
                 ?? mapConductorAnnotation?.markerState
-            let cachedIcon = markerIcons[markerIdString] ?? mapConductorAnnotation?.initialBitmapIcon
-                ?? strategyMarkerIcons[markerIdString]
+            // アイコンは state の今の値から引く（`toBitmapIcon()` はアイコンごとに描いた絵を
+            // 覚えているので軽い）。in-place で差し替えたアイコンも、ビューが作り直されたときに
+            // 古い絵へ戻らない。
+            let stateIcon = markerState.map { $0.icon?.toBitmapIcon() ?? defaultBitmapIcon }
+            let fallbackIcon = mapConductorAnnotation?.initialBitmapIcon ?? strategyMarkerIcons[markerIdString]
 
             // If this isn't one of our markers, allow MapKit's default behavior.
-            if markerState == nil, cachedIcon == nil { return nil }
+            if markerState == nil, fallbackIcon == nil { return nil }
 
             // Avoid returning nil here; returning nil makes MapKit fall back to the default pin annotation.
-            let resolvedIcon = cachedIcon ?? (markerState?.icon ?? DefaultMarkerIcon()).toBitmapIcon()
+            let resolvedIcon = stateIcon ?? fallbackIcon ?? defaultBitmapIcon
 
             let identifier = "MapKitMarker"
             let annotationView = mapView.dequeueReusableAnnotationView(withIdentifier: identifier)
@@ -499,7 +568,8 @@ private struct MapKitMapViewRepresentable: UIViewRepresentable {
 
             annotationView.annotation = annotation
             if let markerState {
-                if markerController?.getMarkerState(for: markerIdString) != nil || markerStates[markerIdString] != nil {
+                if markerController?.getMarkerState(for: markerIdString) != nil
+                    || markerController?.syncedMarkerState(for: markerIdString) != nil {
                     markerController?.renderer.configureAnnotationView(annotationView, for: markerState, bitmapIcon: resolvedIcon)
                 } else {
                     strategyManager.renderer?.configureAnnotationView(annotationView, for: markerState, bitmapIcon: resolvedIcon)
@@ -514,6 +584,8 @@ private struct MapKitMapViewRepresentable: UIViewRepresentable {
                     y: -(resolvedIcon.anchor.y - 0.5) * resolvedIcon.bitmap.size.height
                 )
                 annotationView.alpha = 1
+                // 使い回したビューに前のマーカーの順位を残さない。
+                annotationView.zPriority = .defaultUnselected
             }
 
             return annotationView
@@ -527,7 +599,7 @@ private struct MapKitMapViewRepresentable: UIViewRepresentable {
             guard let pointAnnotation = view.annotation as? MKPointAnnotation,
                   let markerId = pointAnnotation.title,
                   let markerState = markerController?.getMarkerState(for: markerId)
-                    ?? markerStates[markerId]
+                    ?? markerController?.syncedMarkerState(for: markerId)
                     ?? strategyManager.controller?.markerManager.getEntity(markerId)?.state else {
                 return
             }
@@ -548,7 +620,7 @@ private struct MapKitMapViewRepresentable: UIViewRepresentable {
             guard let pointAnnotation = view.annotation as? MKPointAnnotation,
                   let markerId = pointAnnotation.title,
                   let markerState = markerController?.getMarkerState(for: markerId)
-                    ?? markerStates[markerId] else {
+                    ?? markerController?.syncedMarkerState(for: markerId) else {
                 return
             }
 
@@ -696,10 +768,11 @@ private struct MapKitMapViewRepresentable: UIViewRepresentable {
                 farRight: geoPoint(at: CGPoint(x: mapView.bounds.maxX, y: 0), mapView: mapView)
             )
 
-            return mapView.toMapCameraPosition(
+            let raw = mapView.toMapCameraPosition(
                 logicalTiltHint: controller?.lastLogicalTilt,
                 visibleRegion: visibleRegion
             )
+            return controller?.reportedCamera(raw, mapView: mapView) ?? raw
         }
 
         private func geoPoint(at point: CGPoint, mapView: MKMapView) -> GeoPoint? {

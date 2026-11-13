@@ -1,7 +1,7 @@
 import Combine
 import CoreLocation
 import MapKit
-import MapConductorCore
+@_spi(MapConductorDriver) import MapConductorCore
 
 @MainActor
 final class MapKitMarkerController: AbstractMarkerController<MKPointAnnotation, MapKitMarkerRenderer> {
@@ -21,8 +21,18 @@ final class MapKitMarkerController: AbstractMarkerController<MKPointAnnotation, 
         super.init(markerManager: markerManager, renderer: renderer)
     }
 
+    /// 同一一覧の再送を見抜く門番。詳細は型のコメントに。
+    private var syncIdentity = MarkerListIdentity()
+
     func syncMarkers(_ markers: [Marker]) {
         MCLog.marker("MapKitMarkerController.syncMarkers count=\(markers.count)")
+        // 同じ一覧の再送は入口で帰す。SwiftUI はカメラが動くたびに body を
+        // 再評価し、そのたびに全マーカーがここへ来る。なぜそれが実害か
+        // （144k 件で操作の 89% が凍った）は core の MarkerListIdentity に。
+        guard syncIdentity.shouldProcess(markers) else {
+            refreshTileLayerIfNeeded()
+            return
+        }
         let newIds = Set(markers.map { $0.id })
         let oldIds = Set(markerStatesById.keys)
 
@@ -73,7 +83,6 @@ final class MapKitMarkerController: AbstractMarkerController<MKPointAnnotation, 
 
     private func subscribeToMarker(_ state: MarkerState) {
         guard markerSubscriptions[state.id] == nil else { return }
-        MCLog.marker("MapKitMarkerController.subscribe id=\(state.id)")
         markerSubscriptions[state.id] = state.asFlow()
             .dropFirst() // Skip initial value to avoid triggering update on subscription
             .receive(on: DispatchQueue.main)
@@ -96,6 +105,12 @@ final class MapKitMarkerController: AbstractMarkerController<MKPointAnnotation, 
         markerManager.getEntity(id)?.state
     }
 
+    /// 最後に `syncMarkers` で受け取った一覧の state。`add` の Task が登録を終える前
+    /// （MapKit は `addAnnotation` の直後にビューを求めることがある）にも引ける。
+    func syncedMarkerState(for id: String) -> MarkerState? {
+        markerStatesById[id]
+    }
+
     func getIcon(for state: MarkerState) -> BitmapIcon {
         let resolvedIcon = state.icon ?? DefaultMarkerIcon()
         return resolvedIcon.toBitmapIcon()
@@ -107,6 +122,9 @@ final class MapKitMarkerController: AbstractMarkerController<MKPointAnnotation, 
     private var tileRenderer: MarkerTileRenderer<MKPointAnnotation>?
     private var tileRouteId: String?
     private var tiledMarkerIds: Set<String> = []
+    /// タイル URL の版。マーカーが変わるたびに上げ、地図に描画済みのタイルを取り直させる。
+    private var tileVersion: Int64 = 0
+    private var tileRefreshScheduled = false
     private var tileOverlay: MKTileOverlay?
     private var lastServerBaseUrl: String = ""
     private let defaultMarkerIconForTiling: BitmapIcon = DefaultMarkerIcon().toBitmapIcon()
@@ -128,11 +146,41 @@ final class MapKitMarkerController: AbstractMarkerController<MKPointAnnotation, 
             tileSize: Self.retinaAwareTileSize,
             cacheSizeBytes: tilingOptions.cacheSize,
             debugTileOverlay: tilingOptions.debugTileOverlay,
-            iconScaleCallback: scaledCallback
+            iconScaleCallback: scaledCallback,
+            // MapLibre と同じく tilingOptions から。渡し忘れると 14px の間引きが
+            // 黙って無効になり、密なデータで描画も突き合わせも重くなる（実際に
+            // ここが 0 のままだった）。
+            declutterPx: tilingOptions.declutterPx
         )
         TileServerRegistry.get().register(routeId: routeId, provider: renderer)
         tileRenderer = renderer
         tileRouteId = routeId
+    }
+
+    /// タイル担当のマーカーが変わったら、タイルを描き直させる。
+    ///
+    /// タイル担当のマーカーはネイティブのマーカーを持たないので、基底の `update` は
+    /// 管理表を書き換えるだけで地図には何も届かない。アイコンや位置をその場で
+    /// 書き換えても、描画済みのタイルは古い絵のまま残っていた。
+    override func update(state: MarkerState) async {
+        await super.update(state: state)
+        guard tiledMarkerIds.contains(state.id) else { return }
+        scheduleTileRefresh()
+    }
+
+    /// 描き直しは 1 回にまとめる。ラベルの付け替えのように数百本が続けて変わると、
+    /// 1 本ごとに層を作り直して、そのたびに地図が全タイルを取り直す。
+    private func scheduleTileRefresh() {
+        guard !tileRefreshScheduled else { return }
+        tileRefreshScheduled = true
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            self.tileRefreshScheduled = false
+            guard let tileRenderer = self.tileRenderer else { return }
+            tileRenderer.invalidate()
+            self.tileVersion += 1
+            self.updateTileOverlay(hasTiledMarkers: !self.tiledMarkerIds.isEmpty)
+        }
     }
 
     override func add(data: [MarkerState]) async {
@@ -153,6 +201,7 @@ final class MapKitMarkerController: AbstractMarkerController<MKPointAnnotation, 
             defaultMarkerIcon: defaultMarkerIconForTiling,
             tilingEnabled: tilingOptions.enabled,
             tiledMarkerIds: &localTiledMarkerIds,
+            addedTracker: addedTracker,
             shouldTile: { [shouldTileAll] _ in shouldTileAll }
         )
         tiledMarkerIds = localTiledMarkerIds
@@ -160,8 +209,12 @@ final class MapKitMarkerController: AbstractMarkerController<MKPointAnnotation, 
 
         if result.tiledDataChanged, let tileRenderer {
             tileRenderer.invalidate()
+            tileVersion += 1
             updateTileOverlay(hasTiledMarkers: result.hasTiledMarkers)
         }
+
+        // The newly tiled markers are on the map once their tile layer is.
+        await addedTracker.admitAndNotify(result.tiledAdded)
     }
 
     private func refreshTileLayerIfNeeded() {
@@ -183,12 +236,18 @@ final class MapKitMarkerController: AbstractMarkerController<MKPointAnnotation, 
 
         let server = TileServerRegistry.get()
         lastServerBaseUrl = server.baseUrl
-        let urlTemplate = server.urlTemplate(routeId: routeId, tileSize: tileRenderer.tileSize)
+        let urlTemplate = server.urlTemplate(
+            routeId: routeId,
+            tileSize: tileRenderer.tileSize,
+            // 版は URL に入れる。同じ URL のままだと地図は描画済みのタイルを取り直さない。
+            cacheKey: "v\(tileVersion)"
+        )
         MCLog.marker("MapKitMarkerController.updateTileOverlay addOverlay urlTemplate=\(urlTemplate) tileSize=\(tileRenderer.tileSize)")
         // MKTileOverlay.tileSize=256 ensures MapKit requests tiles at the correct zoom level.
         // The server returns retinaAwareTileSize images for Retina sharpness.
         let overlay = MarkerTileOverlay(urlTemplate: urlTemplate, tileSize: 256)
-        mapView.addOverlay(overlay, level: .aboveLabels)
+        // マーカーのタイルはマーカーと同じ帯（オーバーレイの中では一番上）。
+        MapKitOverlayStacking.add(overlay, OverlayStackKey(.marker), to: mapView)
         tileOverlay = overlay
     }
 
@@ -196,34 +255,23 @@ final class MapKitMarkerController: AbstractMarkerController<MKPointAnnotation, 
     func handleTiledMarkerTap(at screenPoint: CGPoint) -> Bool {
         MCLog.marker("MapKitMarkerController.handleTiledMarkerTap point=\(screenPoint) tiledCount=\(tiledMarkerIds.count)")
         guard !tiledMarkerIds.isEmpty, let mapView else { return false }
-        var bestState: MarkerState? = nil
-        var bestDist = CGFloat.infinity
-
-        for id in tiledMarkerIds {
-            guard let entity = markerManager.getEntity(id), entity.state.clickable else { continue }
-            let coord = CLLocationCoordinate2D(
-                latitude: entity.state.position.latitude,
-                longitude: entity.state.position.longitude
-            )
-            let markerPoint = mapView.convert(coord, toPointTo: mapView)
-            // アイコン矩形 + tapTolerance で判定する（android の `find()` と同じ）。
-            // 以前は 44pt の固定半径で、アイコンの大きさを一切見ていなかったため、
-            // 大きいアイコンは端をタップしても反応せず、小さいアイコンは離れていても反応していた。
-            guard MarkerHitTest.hitsIcon(
-                touchScreen: screenPoint,
-                markerScreen: markerPoint,
-                state: entity.state
-            ) else { continue }
-            // 重なったマーカー同士は、アンカーがタップに近い方を優先する。
-            let dist = hypot(screenPoint.x - markerPoint.x, screenPoint.y - markerPoint.y)
-            if dist < bestDist {
-                bestDist = dist
-                bestState = entity.state
+        // 選び方はコアの MarkerHitTest.pick と同じ。指の下にアイコン（ラベル込み）が描かれている
+        // マーカーを、アンカーの近い別のマーカーより優先する。
+        let candidates = tiledMarkerIds.compactMap { markerManager.getEntity($0)?.state }.filter(\.clickable)
+        let bestState = MarkerHitTest.pick(
+            touchScreen: screenPoint,
+            candidates: candidates,
+            state: { $0 },
+            project: {
+                mapView.convert(
+                    CLLocationCoordinate2D(latitude: $0.latitude, longitude: $0.longitude),
+                    toPointTo: mapView
+                )
             }
-        }
+        )
 
         if let state = bestState {
-            MCLog.marker("MapKitMarkerController.handleTiledMarkerTap hit id=\(state.id) dist=\(bestDist)")
+            MCLog.marker("MapKitMarkerController.handleTiledMarkerTap hit id=\(state.id)")
             dispatchClick(state: state)
             return true
         }

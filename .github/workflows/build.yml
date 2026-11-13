@@ -32,6 +32,25 @@ jobs:
       - name: Show toolchain
         run: xcodebuild -version && swift --version
 
+      # Package.swift は `../ios-sdk-core` があればそれを使い、無ければ released 版
+      # （`from: "1.1.4"`）へ解決する。CI はこのリポジトリしか checkout しないので
+      # 常に released 版になり、**コアの未リリースな変更に追随する PR は永久に赤いまま**
+      # になっていた（CameraBearing をコアへ足したときに踏んだ）。
+      # 隣に置いてローカル開発と同じ経路に乗せる。同名ブランチがあればそちらを使う。
+      - name: Check out MapConductorCore next to this package
+        env:
+          HEAD_REF: ${{ github.head_ref }}
+        run: |
+          url=https://github.com/MapConductor/ios-sdk-core.git
+          if [ -n "$HEAD_REF" ] && git ls-remote --exit-code --heads "$url" "$HEAD_REF" >/dev/null 2>&1; then
+            echo "ios-sdk-core: matching branch $HEAD_REF"
+            git clone --depth 1 --branch "$HEAD_REF" "$url" ../ios-sdk-core
+          else
+            echo "ios-sdk-core: default branch"
+            git clone --depth 1 "$url" ../ios-sdk-core
+          fi
+          test -f ../ios-sdk-core/Package.swift
+
       - name: Build
         run: |
           scheme=$(sed -n 's/^[[:space:]]*name: "\([^"]*\)".*/\1/p' Package.swift | head -1)

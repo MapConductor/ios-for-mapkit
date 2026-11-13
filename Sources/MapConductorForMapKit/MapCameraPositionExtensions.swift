@@ -1,12 +1,18 @@
 import Foundation
 import MapKit
-import MapConductorCore
+@_spi(MapConductorDriver) import MapConductorCore
 
 private let converter = MapKitZoomAltitudeConverter(zoom0Altitude: 171_319_879.0)
 private let mapKitMaxPitch: Double = 80.9
 private let mapConductorTileSizePoints: Double = 256.0
 private let minCosLat: Double = 0.01
 private let minCosTilt: Double = 0.05
+
+/// MapKit（iOS）のカメラの縦の視野角（度）。
+///
+/// MapKit は値を公開していない。iPad Pro 11 で、傾けた地図の中心と北の地点の画面位置から
+/// 焦点距離を求めて実測した値（tilt 30°）。
+let mapKitVerticalFieldOfView: Double = 30.0
 
 // Convert from MapCameraPosition to MKMapCamera
 public extension MapCameraPosition {
@@ -30,7 +36,7 @@ public extension MapCameraPosition {
             ? Spherical.computeOffset(
                 origin: position,
                 distance: distance * tan(pitchRadians),
-                heading: bearing
+                heading: CameraBearing.toNativeHeading(bearing)
             )
             : position
 
@@ -42,7 +48,7 @@ public extension MapCameraPosition {
             ),
             fromDistance: distance,
             pitch: nativePitch,
-            heading: bearing
+            heading: CameraBearing.toNativeHeading(bearing)
         )
     }
 }
@@ -54,7 +60,11 @@ public extension MKMapView {
         visibleRegion: VisibleRegion? = nil
     ) -> MapCameraPosition {
         let cameraAltitude = camera.altitude
-        let pitchRadians = camera.pitch * .pi / 180.0
+        // `MKMapCamera.pitch` は CGFloat。CGFloat と Double の暗黙変換に任せると
+        // CoreGraphics の `cos(CGFloat)` と Foundation の `cos(Double)` が両方候補になり、
+        // ツールチェーンによっては `ambiguous use of 'cos'` で落ちる（CI の macos-15 で踏んだ）。
+        // 手元の Xcode では通ってしまうので、Double へ明示的に寄せておく。
+        let pitchRadians = Double(camera.pitch) * .pi / 180.0
         // Recover the slant distance set via MKMapCamera(fromDistance:) — the inverse of toMKMapCamera().
         let slantDistance = cameraAltitude / max(cos(pitchRadians), minCosTilt)
         var position = GeoPoint(
@@ -95,7 +105,7 @@ public extension MKMapView {
         return MapCameraPosition(
             position: position,
             zoom: zoom,
-            bearing: camera.heading,
+            bearing: CameraBearing.bearingFromNativeHeading(camera.heading),
             tilt: logicalTilt,
             visibleRegion: visibleRegion
         )
@@ -154,7 +164,11 @@ private extension MKMapView {
     /// from whatever camera happens to be set and reused to place the next one.
     func metersPerPointPerDistance() -> Double? {
         guard let metersPerPoint = measuredMetersPerPointAtCenter() else { return nil }
-        let pitchRadians = camera.pitch * .pi / 180.0
+        // `MKMapCamera.pitch` は CGFloat。CGFloat と Double の暗黙変換に任せると
+        // CoreGraphics の `cos(CGFloat)` と Foundation の `cos(Double)` が両方候補になり、
+        // ツールチェーンによっては `ambiguous use of 'cos'` で落ちる（CI の macos-15 で踏んだ）。
+        // 手元の Xcode では通ってしまうので、Double へ明示的に寄せておく。
+        let pitchRadians = Double(camera.pitch) * .pi / 180.0
         let slantDistance = camera.altitude / max(cos(pitchRadians), minCosTilt)
         guard slantDistance > 0 else { return nil }
         let factor = metersPerPoint / slantDistance
