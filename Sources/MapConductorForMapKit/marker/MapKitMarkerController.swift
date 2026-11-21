@@ -83,22 +83,19 @@ final class MapKitMarkerController: AbstractMarkerController<MKPointAnnotation, 
 
     private func subscribeToMarker(_ state: MarkerState) {
         guard markerSubscriptions[state.id] == nil else { return }
-        markerSubscriptions[state.id] = state.asFlow()
-            .dropFirst() // Skip initial value to avoid triggering update on subscription
-            .receive(on: DispatchQueue.main)
-            .sink { [weak self] _ in
+        markerSubscriptions[state.id] = state.onChange { [weak self] in
+            guard let self else { return }
+            guard self.markerStatesById[state.id] != nil else { return }
+            MCLog.marker("MapKitMarkerController.onChange id=\(state.id) anim=\(String(describing: state.getAnimation()))")
+            // Update InfoBubble immediately using the latest MarkerState values.
+            // Renderer updates can be throttled/deferred, which otherwise makes the bubble lag behind rapid updates.
+            self.onUpdateInfoBubble(state.id)
+            Task { [weak self] in
                 guard let self else { return }
-                guard self.markerStatesById[state.id] != nil else { return }
-                MCLog.marker("MapKitMarkerController.asFlow emit id=\(state.id) anim=\(String(describing: state.getAnimation()))")
-                // Update InfoBubble immediately using the latest MarkerState values.
-                // Renderer updates can be throttled/deferred, which otherwise makes the bubble lag behind rapid updates.
+                await self.update(state: state)
                 self.onUpdateInfoBubble(state.id)
-                Task { [weak self] in
-                    guard let self else { return }
-                    await self.update(state: state)
-                    self.onUpdateInfoBubble(state.id)
-                }
             }
+        }
     }
 
     func getMarkerState(for id: String) -> MarkerState? {
